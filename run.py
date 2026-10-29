@@ -3,6 +3,10 @@
     python run.py grass              # Pi: fullscreen on the panel
     python run.py grass --window     # laptop: 480x640 window, mouse = touch
     python run.py --list             # show available scenes
+    python run.py                    # the last scene shown (how the boot service starts it)
+
+On the Pi, hold a finger still in any corner of the screen for two seconds to
+switch to the next scene.
 
 While it runs, open the control panel in a browser:
     http://<pi-address>:8000   (from the laptop or phone)
@@ -10,6 +14,7 @@ While it runs, open the control panel in a browser:
 """
 import argparse
 import errno
+import math
 import os
 import signal
 import socket
@@ -23,11 +28,14 @@ import pygame
 from playground.control import Controller, start_server
 from playground.loader import list_scenes, load_module, preset_path
 from playground.scene import Values
+from playground import state
 from playground.touch import EvdevTouch
 
 W, H = 480, 640                   # panel resolution (portrait)
 STEP = 1 / 60                     # fixed physics/animation time step
 MAX_STEPS = 4                     # never fall further behind than this per frame
+HOLD_SECONDS = 2.0                # hold still in a corner this long to switch scene
+CORNER = 80                       # corner zone size, in panel pixels
 
 
 def open_display(window, force_fb):
@@ -93,6 +101,56 @@ def _stop_on_signal(signum, frame):
     raise KeyboardInterrupt          # run the normal clean-up (clear screen, free the port)
 
 
+class CornerHold:
+    """On-screen scene switching with no computer: hold a finger still in any
+    corner of the panel for HOLD_SECONDS and the next scene starts."""
+
+    def __init__(self, w, h):
+        self.w, self.h = w, h
+        self.start = None                     # (x, y, time) of a press in a corner
+        self.fired = False
+
+    def feed(self, kind, x, y, now):
+        """Return True when a hold completes."""
+        if kind == "down":
+            in_corner = (x < CORNER or x > self.w - CORNER) and (y < CORNER or y > self.h - CORNER)
+            self.start = (x, y, now) if in_corner else None
+            self.fired = False
+        elif kind == "move" and self.start and math.hypot(x - self.start[0], y - self.start[1]) > 25:
+            self.start = None                 # moved away: it's a normal touch
+        elif kind == "up":
+            self.start = None
+        return False
+
+    def check(self, now):
+        if self.start and not self.fired and now - self.start[2] >= HOLD_SECONDS:
+            self.fired = True
+            self.start = None
+            return True
+        return False
+
+
+class Banner:
+    """Shows the scene name for a moment after switching."""
+
+    def __init__(self):
+        self.text, self.until = "", 0.0
+        self.font = pygame.font.Font(None, 40)
+
+    def show(self, text, now, secs=2.5):
+        self.text, self.until = text, now + secs
+
+    def draw(self, surf, now):
+        if now > self.until or not self.text:
+            return
+        img = self.font.render(self.text, True, (245, 245, 245))
+        box = img.get_rect(center=(surf.get_width() // 2, surf.get_height() // 2)).inflate(36, 22)
+        bg = pygame.Surface(box.size, pygame.SRCALPHA)
+        pygame.draw.rect(bg, (0, 0, 0, 170), bg.get_rect(), border_radius=12)
+        surf.blit(bg, box.topleft)
+        surf.blit(img, img.get_rect(center=box.center))
+
+
 class Stage:
     """Where scenes draw. Portrait scenes draw straight to the screen. Landscape
     scenes (Scene.LANDSCAPE = True) draw on a 640x480 canvas that is rotated onto
@@ -152,7 +210,8 @@ def build_scene(ctrl, name, stage, switching):
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("scene", nargs="?", default="grass")
+    ap.add_argument("scene", nargs="?", default=None,
+                    help="scene to run (default: the last one shown, else grass)")
     ap.add_argument("--window", action="store_true", help="run in a window (laptop)")
     ap.add_argument("--fb", action="store_true", help="draw straight to /dev/fb0")
     ap.add_argument("--port", type=int, default=8000, help="control panel port")
@@ -165,6 +224,9 @@ def main():
         for n, t in available.items():
             print(f"{n:12s} {t}")
         return
+    saved = state.load()
+    if args.scene is None:
+        args.scene = saved.get("scene") if saved.get("scene") in available else "grass"
     if args.scene not in available:
         sys.exit(f"unknown scene '{args.scene}'. Try: {', '.join(available)}")
 
@@ -175,6 +237,7 @@ def main():
 
     # claim the panel first, so a copy that's already running hands over the screen
     ctrl = Controller(available, preset_path)
+    ctrl.flip_landscape = bool(saved.get("flip_landscape", False))
     if not args.no_panel:
         try:
             claim_panel(ctrl, args.port)
@@ -191,6 +254,12 @@ def main():
     clock = pygame.time.Clock()
     stage = Stage(screen, fb, window)
     scene = build_scene(ctrl, args.scene, stage, switching=True)
+    state.save(scene=args.scene)
+    corner = CornerHold(w, h)
+    banner = Banner()
+    banner.show(available[args.scene], time.time(), 2.0)
+    names = list(available)
+    flip_seen = ctrl.flip_landscape
 
     acc = 0.0
     dragging = False
@@ -201,6 +270,13 @@ def main():
                 print("Stopping (requested from the control panel or a new run).")
                 return
 
+            now = time.time()
+            if corner.check(now):                  # corner hold: next scene
+                ctrl.request_scene(names[(names.index(ctrl.scene_name) + 1) % len(names)])
+            if ctrl.flip_landscape != flip_seen:
+                flip_seen = ctrl.flip_landscape
+                state.save(flip_landscape=flip_seen)
+
             # scene switch / rebuild requested from the panel
             name = ctrl.take_pending_scene()
             if name or ctrl.take_reset():
@@ -208,6 +284,9 @@ def main():
                     scene = build_scene(ctrl, name or ctrl.scene_name, stage,
                                         switching=bool(name))
                     ctrl.last_error = ""
+                    if name:
+                        state.save(scene=name)
+                        banner.show(available[name], now)
                 except Exception:
                     ctrl.last_error = traceback.format_exc(limit=3)
                     print(ctrl.last_error)
@@ -230,6 +309,7 @@ def main():
                     dragging = False
                     events.append(("up", *e.pos))
             for kind, x, y in events:
+                corner.feed(kind, x, y, now)        # raw panel coordinates
                 scene.touch(kind, *stage.map_touch(x, y, ctrl.flip_landscape))
 
             # fixed-step update, then draw
@@ -241,6 +321,7 @@ def main():
             if ctrl.show_fps:
                 canvas.blit(font.render(f"{clock.get_fps():3.0f} fps", True,
                                         (230, 230, 230), (0, 0, 0)), (4, 4))
+            banner.draw(canvas, now)
             stage.present(ctrl.flip_landscape)
     except KeyboardInterrupt:
         pass

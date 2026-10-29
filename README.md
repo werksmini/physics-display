@@ -33,6 +33,21 @@ then fill in `setup`, `update(dt)`, `draw(surf)` and `touch(kind, x, y)` (see `p
 Add a `README.md`, then run `python tools/make_previews.py <name>`. "Save as default" in the panel
 writes `scenes/<name>/preset.json`; commit it to keep it.
 
+## Run at boot (no computer needed)
+
+```bash
+bash tools/install_autostart.sh            # install, start now, and start at every boot
+bash tools/install_autostart.sh --remove   # turn it off
+```
+
+At boot the Pi shows the **last scene** you were looking at (and remembers the landscape flip).
+To change scene without a computer, **hold a finger still in any corner for two seconds**: the
+next scene starts and its name appears briefly. The control panel still works from a phone on
+the same Wi-Fi.
+
+Handy commands: `sudo systemctl restart physics-display` (after `git pull`),
+`sudo systemctl stop physics-display`, and `journalctl -u physics-display -f` to see errors.
+
 ## Quick start
 
 ```bash
