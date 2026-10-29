@@ -1,21 +1,23 @@
-"""A foggy car window at night: wipe the condensation to see the city go by.
+"""A foggy car window at blue hour on a rural Midwest road: wipe it to see out.
 
-You're in the passenger seat looking out the side window, so the front of
-the car is to your left and the city slides past left to right.
+You're in the passenger seat of a small classic 1970s sedan, wide-angle, so
+the big side window fills most of the view: thin pillars, bright chrome trim,
+a front vent window with its own divider, a small round chrome mirror outside,
+and a pleated vinyl door panel with a chrome window crank. The front of the
+car is to your left, so the land slides past left to right.
 
-- The city: looping layers drawn once at startup (far skyline, nearer
-  buildings with lit windows and neon, street lamps with glow), scrolled at
-  different speeds for depth (parallax).
-- The side mirror sits outside the glass at the front corner and shows a
-  flipped slice of the street behind.
-- The fog: a coarse density map over the glass. Each frame, a blurred,
-  hazy copy of the view is laid over the clear view with the fog density
-  as its transparency, so thick fog shows only soft lights.
+- The land: looping layers drawn once (far tree lines and farmsteads with a
+  lit window, a silo and a water tower; fields with round hay bales;
+  telephone poles with sagging wires; a fence; roadside grass), scrolled at
+  different speeds for depth (parallax). Blue-hour sky with a few early stars
+  and a thin moon.
+- The fog: a coarse density map over the glass. Each frame, a heavily
+  blurred, brightened copy of the view is laid over the clear view with the
+  fog density as its transparency.
 - Wiping: your finger clears fog along its path, with soft edges.
 - Weight: fog creeps back in from foggy neighbours and refills patchily over
   time. Droplets gather at the edges of a wipe and run down the glass,
   cutting thin clear trails that slowly fog over again.
-- When a street lamp passes, it briefly lights the car interior.
 """
 import math
 
@@ -26,30 +28,44 @@ from playground.noise import ValueNoise2D, lerp_color
 from playground.scene import BaseScene, Param
 
 LW, LH = 240, 320                       # drawing resolution (scaled 2x to the panel)
-WIN = pygame.Rect(18, 40, 210, 176)     # bounding box of the window opening
-GROUND = 200                            # street level, in drawing pixels
-SKY_TOP, SKY_LOW, SKY_GLOW = (6, 8, 22), (34, 26, 46), (78, 50, 44)
-FAR_BLDG, MID_BLDG = (24, 28, 46), (11, 13, 22)
-WARM, COOL = [(236, 198, 120), (250, 214, 150), (226, 170, 96)], [(190, 214, 250), (170, 200, 240)]
-NEON = [(255, 70, 150), (60, 230, 230), (255, 150, 40), (140, 120, 255)]
-INTERIOR, INTERIOR_EDGE, INTERIOR_LIT = (18, 18, 22), (34, 34, 40), (70, 56, 38)
-HAZE = np.array([168, 176, 190], np.float32)
-CELL = 3                                # fog grid cell size, in drawing pixels
+WIN = pygame.Rect(6, 22, 230, 232)      # bounding box of the glass (wide angle)
+HORIZON = 156                           # where land meets sky, in drawing pixels
+CELL = 3                                # fog grid cell, in drawing pixels
+TILE = LW * 2                           # width of each looping layer
+
+SKY = [(0.0, (14, 22, 58)), (0.45, (34, 56, 112)), (0.82, (88, 116, 170)), (0.95, (150, 150, 182)),
+       (1.0, (182, 160, 172))]
+FAR, FAR_LIGHT = (22, 32, 56), (30, 42, 68)
+FIELD_A, FIELD_B = (26, 36, 54), (32, 42, 58)
+NEAR = (12, 16, 26)
+WARM = (255, 200, 120)
+HAZE = np.array([150, 166, 200], np.float32)
+
+VINYL, VINYL_DARK, VINYL_LIGHT = (70, 48, 34), (46, 30, 22), (96, 68, 48)     # cognac vinyl
+HEADLINER = (54, 52, 50)
+CHROME, CHROME_DARK, CHROME_LIGHT = (176, 182, 194), (92, 98, 112), (236, 240, 248)
 
 
-def window_polygon():
-    """The glass opening: slanted front pillar on the left, B-pillar on the right."""
-    pts = [(18, 216), (20, 190)]
-    for a in np.linspace(math.pi, 1.5 * math.pi, 8):            # rounded top-front corner
-        pts.append((62 + 26 * math.cos(a), 66 + 26 * math.sin(a)))
-    pts += [(150, 40), (228, 42), (228, 216)]
-    return pts
+def sky_color(t):
+    for (t0, c0), (t1, c1) in zip(SKY, SKY[1:]):
+        if t <= t1:
+            return lerp_color(c0, c1, (t - t0) / (t1 - t0))
+    return SKY[-1][1]
+
+
+def glass_panes():
+    """Main pane and front vent pane (polygons), plus the divider line between them."""
+    a_bottom, a_top = (6, 254), (34, 30)                     # slanted front pillar
+    div_bottom, div_top = (64, 254), (70, 26)                # vent window divider
+    main = [div_bottom, div_top, (100, 24), (236, 22), (236, 254)]
+    vent = [a_bottom, (8, 200), (16, 70), a_top, (52, 26), div_top, div_bottom]
+    return main, vent, (div_bottom, div_top)
 
 
 class Scene(BaseScene):
     TITLE = "Foggy car window"
     PARAMS = [
-        Param("speed", 60, 0, 300, 5, "Driving speed", help="0 = stopped at a light."),
+        Param("speed", 70, 0, 300, 5, "Driving speed", help="0 = stopped on the shoulder."),
         Param("regrow_time", 14, 1, 60, 0.5, "Fog return time", help="Seconds for a wiped patch to fog over."),
         Param("creep", 0.6, 0, 3, 0.05, "Fog creep", help="How much fog spreads in from foggy areas."),
         Param("fog_max", 0.96, 0.3, 1, 0.01, "Fog thickness"),
@@ -58,144 +74,201 @@ class Scene(BaseScene):
         Param("wipe", 0.85, 0.1, 1, 0.05, "Wipe strength"),
         Param("drips", 0.6, 0, 4, 0.05, "Drips from wipes"),
         Param("ambient_drips", 0.15, 0, 2, 0.05, "Random drips"),
-        Param("lamp_light", 1.0, 0, 2, 0.05, "Lamp light on interior"),
     ]
+    PREVIEW_AFTER = 20
 
     # ------------------------------------------------------------------ setup
     def setup(self):
         self.rng = rng = np.random.default_rng(12)
         self.low = pygame.Surface((LW, LH))
         self.view = pygame.Surface((LW, LH))
-        self._build_city()
-        self._build_frame()
-        self._build_mirror()
+        self._build_land()
+        self._build_car()
 
         self.gw, self.gh = WIN.w // CELL + 1, WIN.h // CELL + 1
         self.fog = np.full((self.gw, self.gh), float(self.p.fog_max), np.float32)
         nz = ValueNoise2D(seed=8)
         gx, gy = np.meshgrid(np.arange(self.gw), np.arange(self.gh), indexing="ij")
-        self.regrow_jit = (0.55 + 0.9 * nz(gx / 7.0, gy / 7.0)).astype(np.float32)   # patchy
-        self.speckle = (0.9 + 0.2 * rng.random((self.gw, self.gh))).astype(np.float32)[..., None]   # texture
+        self.regrow_jit = (0.55 + 0.9 * nz(gx / 7.0, gy / 7.0)).astype(np.float32)   # patchy regrowth
+        self.speckle = (0.9 + 0.2 * rng.random((self.gw, self.gh))).astype(np.float32)[..., None]
         self.fog_surf = pygame.Surface((self.gw, self.gh), pygame.SRCALPHA)
-        self.off = np.zeros(4)                 # scroll offsets per layer
+        self.off = np.zeros(5)
         self.finger = None
         self.prev = None
         self.drops = []                        # [x, y, vy, stuck_time, life]
-        self.t = 0.0
 
-    def _build_city(self):
+    def _build_land(self):
         rng = self.rng
+        # sky with a few early stars and a thin moon
         self.sky = pygame.Surface((LW, LH))
         for y in range(LH):
-            t = min(1.0, y / GROUND)
-            c = lerp_color(SKY_TOP, SKY_LOW, t ** 1.6)
-            if t > 0.7:
-                c = lerp_color(c, SKY_GLOW, (t - 0.7) / 0.3 * 0.7)
-            pygame.draw.line(self.sky, c, (0, y), (LW, y))
+            pygame.draw.line(self.sky, sky_color(min(1.0, y / HORIZON)), (0, y), (LW, y))
+        for _ in range(26):
+            x, y = int(rng.uniform(10, LW - 4)), int(rng.uniform(24, HORIZON * 0.45))
+            b = int(rng.uniform(120, 220))
+            self.sky.set_at((x, y), (b, b, min(255, b + 20)))
+        mx, my = 186, 52
+        pygame.draw.circle(self.sky, (236, 232, 206), (mx, my), 7)
+        pygame.draw.circle(self.sky, sky_color(my / HORIZON), (mx - 3, my - 2), 7)
 
-        def buildings(tile_w, hmin, hmax, wmin, wmax, color, win_step, win_size, lit, neon=0.0):
-            tile = pygame.Surface((tile_w, LH), pygame.SRCALPHA)
-            x = 0
-            while x < tile_w:
-                bw = int(rng.uniform(wmin, wmax))
-                bh = int(rng.uniform(hmin, hmax))
-                top = GROUND - bh
-                col = tuple(max(0, min(255, c + int(rng.uniform(-4, 4)))) for c in color)
-                pygame.draw.rect(tile, col, (x, top, bw, bh + 2))
-                if rng.random() < 0.3:                              # rooftop detail
-                    pygame.draw.rect(tile, col, (x + bw // 3, top - 4, max(2, bw // 5), 4))
-                for wy in range(top + 3, GROUND - 3, win_step):
-                    for wx in range(x + 2, x + bw - win_size, win_step):
-                        if rng.random() < lit:
-                            wc = WARM[int(rng.integers(3))] if rng.random() < 0.8 else COOL[int(rng.integers(2))]
-                            dim = rng.uniform(0.55, 1.0)
-                            wc = tuple(int(c * dim) for c in wc)
-                            pygame.draw.rect(tile, wc, (wx, wy, win_size, win_size))
-                if neon and rng.random() < neon and bw > 18:
-                    nc = NEON[int(rng.integers(len(NEON)))]
-                    ny = int(top + rng.uniform(8, min(40, bh - 8)))
-                    nw = int(min(bw - 6, rng.uniform(10, 22)))
-                    glow = pygame.Surface((nw + 12, 12), pygame.SRCALPHA)
-                    pygame.draw.rect(glow, (*nc, 60), (0, 0, nw + 12, 12), border_radius=5)
-                    tile.blit(glow, (x + 3 - 6, ny - 5))
-                    pygame.draw.rect(tile, nc, (x + 3, ny, nw, 3))
-                x += bw + int(rng.uniform(0, 4))
-            return tile
+        def tile():
+            return pygame.Surface((TILE, LH), pygame.SRCALPHA)
 
-        tw = LW * 2
-        self.far = buildings(tw, 30, 110, 12, 40, FAR_BLDG, 3, 1, 0.22)
-        self.mid = buildings(tw, 60, 165, 24, 58, MID_BLDG, 5, 2, 0.32, neon=0.35)
+        # far: tree lines (windbreaks) and farmsteads on the horizon
+        far = tile()
+        x = 0
+        while x < TILE:
+            w = int(rng.uniform(8, 40))
+            if rng.random() < 0.65:
+                for k in range(w // 3):
+                    r = rng.uniform(2, 5)
+                    pygame.draw.circle(far, FAR, (x + k * 3, HORIZON - r * 0.6), r)
+            x += w + int(rng.uniform(0, 30))
+        pygame.draw.rect(far, FAR, (0, HORIZON - 1, TILE, 3))
+        self.lights = []                                         # (layer, x, y) for warm glows
+        for fx in (60, 250, 400):
+            fx += int(rng.uniform(-15, 15))
+            pygame.draw.rect(far, FAR, (fx, HORIZON - 14, 4, 14))                     # silo
+            pygame.draw.circle(far, FAR, (fx + 2, HORIZON - 14), 2)
+            pygame.draw.polygon(far, FAR, [(fx + 6, HORIZON), (fx + 6, HORIZON - 6), (fx + 10, HORIZON - 10),
+                                           (fx + 14, HORIZON - 6), (fx + 14, HORIZON)])  # barn
+            pygame.draw.rect(far, FAR_LIGHT, (fx + 18, HORIZON - 5, 7, 5))            # farmhouse
+            pygame.draw.polygon(far, FAR_LIGHT, [(fx + 17, HORIZON - 5), (fx + 21.5, HORIZON - 9), (fx + 26, HORIZON - 5)])
+            far.set_at((fx + 20, HORIZON - 3), WARM)                                    # lit window
+            self.lights.append((0, fx + 31, HORIZON - 8))                               # yard light
+        wx = 330                                                                         # water tower
+        for lx in (wx - 3, wx + 3):
+            pygame.draw.line(far, FAR, (lx, HORIZON), (wx, HORIZON - 14), 1)
+        pygame.draw.ellipse(far, FAR, (wx - 6, HORIZON - 22, 12, 9))
+        self.far = far
 
-        # street lamps: poles (normal blit) and glows (added on top)
-        self.poles = pygame.Surface((tw, LH), pygame.SRCALPHA)
-        self.glows = pygame.Surface((tw, LH))
-        self.lamp_x = []
-        for x in range(30, tw, 120):
-            px = x + int(rng.uniform(-8, 8))
-            self.lamp_x.append(px)
-            pygame.draw.line(self.poles, (14, 14, 18), (px, GROUND + 14), (px, 96), 3)
-            pygame.draw.line(self.poles, (14, 14, 18), (px, 98), (px - 14, 94), 2)
-            for r in range(30, 0, -2):                              # soft additive glow
-                k = (1 - r / 30) ** 2
-                pygame.draw.circle(self.glows, (int(120 * k), int(90 * k), int(50 * k)), (px - 15, 98), r)
-            pygame.draw.circle(self.glows, (255, 226, 170), (px - 15, 98), 3)
-        # street band with a curb highlight
-        self.street = pygame.Surface((LW, LH - GROUND), pygame.SRCALPHA)
-        self.street.fill((14, 14, 18))
-        pygame.draw.line(self.street, (44, 42, 48), (0, 2), (LW, 2))
-        self.tw = tw
+        # mid: field texture and round hay bales
+        mid = tile()
+        for y in range(HORIZON + 2, 240):                       # runs down behind the fence
+            t = min(1.0, (y - HORIZON) / 70)
+            c = lerp_color(FIELD_A, FIELD_B, 0.5 + 0.5 * math.sin(y * 0.9))
+            c = lerp_color(c, NEAR, t * 0.2)                    # stays light enough to silhouette the fence
+            pygame.draw.line(mid, c, (0, y), (TILE, y))
+        for _ in range(900):                                     # crop stubble flecks
+            y = int(HORIZON + 2 + (238 - HORIZON - 2) * rng.random() ** 0.7)
+            x = int(rng.uniform(0, TILE))
+            t = min(1.0, (y - HORIZON) / 70)
+            mid.set_at((x, y), lerp_color((44, 56, 76), NEAR, t * 0.6))
+        for _ in range(9):
+            bx = int(rng.uniform(0, TILE - 8))
+            by = int(rng.uniform(HORIZON + 8, 196))
+            r = 2 + (by - HORIZON) / 18
+            pygame.draw.circle(mid, (40, 46, 58), (bx, by - r), r)
+            pygame.draw.circle(mid, (56, 60, 70), (bx - r * 0.3, by - r * 1.2), r * 0.5)
+        self.mid = mid
 
-    def _build_frame(self):
-        """Car interior around the window, drawn dark and lit versions."""
-        poly = window_polygon()
-        self.win_poly = poly
+        # telephone poles with sagging wires (5 per tile so the wires loop seamlessly)
+        poles = tile()
+        spacing, top, base = TILE // 5, 58, 214
+        pole_x = [int(spacing * i + 20) for i in range(5)]
+        for px in pole_x:
+            pygame.draw.line(poles, NEAR, (px, base), (px, top), 3)
+            pygame.draw.line(poles, NEAR, (px - 9, top + 6), (px + 9, top + 6), 2)       # crossarm
+        for wire_dy, wx_off in ((6, -8), (6, 8), (14, 0)):
+            for i in range(5):
+                x0 = pole_x[i] + wx_off
+                x1 = pole_x[(i + 1) % 5] + wx_off + (TILE if i == 4 else 0)
+                pts = []
+                for k in range(25):
+                    f = k / 24
+                    pts.append((x0 + (x1 - x0) * f, top + wire_dy + 9 * math.sin(math.pi * f)))   # sag
+                pygame.draw.lines(poles, (20, 26, 40), False, pts, 1)
+                if i == 4:                                       # draw the wrapped part at the start too
+                    pygame.draw.lines(poles, (20, 26, 40), False, [(x - TILE, y) for x, y in pts], 1)
+        self.poles = poles
 
-        def paint(base, edge):
-            f = pygame.Surface((LW, LH), pygame.SRCALPHA)
-            f.fill(base)
-            pygame.draw.polygon(f, (0, 0, 0, 0), poly)                  # cut out the glass
-            pygame.draw.polygon(f, edge, poly, 3)                       # rubber seal
-            pygame.draw.rect(f, lerp_color(base, edge, 0.6), (0, 236, LW, 14))   # armrest top
-            pygame.draw.line(f, lerp_color(edge, (90, 90, 96), 0.5), (0, 236), (LW, 236), 1)
-            pygame.draw.rect(f, lerp_color(base, edge, 0.4), (150, 262, 56, 16), border_radius=6)  # handle recess
-            pygame.draw.line(f, edge, (156, 270), (200, 270), 3)
-            pygame.draw.line(f, edge, (0, 226), (LW, 226), 1)           # window sill line
-            for y in range(290, LH, 6):                                 # speaker grille
-                pygame.draw.line(f, lerp_color(base, (0, 0, 0), 0.3), (30, y), (110, y), 1)
-            return f
+        # fence posts and wire close to the road
+        fence = tile()
+        for x in range(0, TILE, 16):
+            pygame.draw.line(fence, NEAR, (x, 236), (x, 216), 2)
+        for y in (221, 229):
+            pygame.draw.line(fence, (22, 26, 38), (0, y), (TILE, y), 1)
+        self.fence = fence
 
-        self.frame = paint(INTERIOR, INTERIOR_EDGE)
-        self.frame_lit = paint(INTERIOR_LIT, lerp_color(INTERIOR_LIT, (160, 140, 110), 0.5))
-        self.mask = pygame.Surface((LW, LH), pygame.SRCALPHA)           # glass-only mask
-        pygame.draw.polygon(self.mask, (255, 255, 255, 255), poly)
-        # faint diagonal reflections on the glass
+        # roadside grass, nearest and fastest
+        grass = tile()
+        pygame.draw.rect(grass, (10, 13, 20), (0, 236, TILE, LH - 236))
+        for _ in range(500):
+            x = rng.uniform(0, TILE)
+            h = rng.uniform(6, 22)
+            a = rng.normal(0.25, 0.2)
+            c = lerp_color((10, 13, 20), (34, 44, 60), rng.random() * 0.7)
+            pygame.draw.line(grass, c, (x, 254), (x + math.sin(a) * h, 254 - math.cos(a) * h), 1)
+        self.grass = grass
+
+        # warm glows (added on top of the far layer)
+        self.glow = pygame.Surface((24, 24))
+        for r in range(12, 0, -1):
+            k = (1 - r / 12) ** 2
+            pygame.draw.circle(self.glow, (int(140 * k), int(100 * k), int(50 * k)), (12, 12), r)
+
+    def _build_car(self):
+        main, vent, (d0, d1) = glass_panes()
+        f = pygame.Surface((LW, LH), pygame.SRCALPHA)
+        f.fill(HEADLINER)
+        # door panel: pleated cognac vinyl below the window
+        pygame.draw.rect(f, VINYL, (0, 254, LW, LH - 254))
+        for y in range(272, LH, 5):
+            pygame.draw.line(f, VINYL_DARK, (0, y), (LW, y), 1)
+            pygame.draw.line(f, VINYL_LIGHT, (0, y + 1), (LW, y + 1), 1)
+        pygame.draw.rect(f, VINYL_DARK, (0, 254, LW, 14))                                 # padded top rail
+        pygame.draw.line(f, VINYL_LIGHT, (0, 256), (LW, 256), 1)
+        # chrome window crank
+        cx, cy = 168, 292
+        pygame.draw.circle(f, CHROME_DARK, (cx, cy), 6)
+        pygame.draw.circle(f, CHROME, (cx, cy), 4)
+        pygame.draw.line(f, CHROME, (cx, cy), (cx + 20, cy + 10), 3)
+        pygame.draw.line(f, CHROME_LIGHT, (cx + 1, cy - 1), (cx + 19, cy + 8), 1)
+        pygame.draw.circle(f, VINYL_DARK, (cx + 22, cy + 11), 4)                         # knob
+        pygame.draw.circle(f, (110, 80, 58), (cx + 21, cy + 10), 2)
+        # chrome door pull
+        pygame.draw.line(f, CHROME_DARK, (40, 284), (100, 284), 4)
+        pygame.draw.line(f, CHROME_LIGHT, (40, 283), (100, 283), 1)
+        # cut out the glass
+        pygame.draw.polygon(f, (0, 0, 0, 0), main)
+        pygame.draw.polygon(f, (0, 0, 0, 0), vent)
+        # bright chrome trim around the glass and the vent divider
+        for poly in (main, vent):
+            pygame.draw.polygon(f, CHROME_DARK, poly, 4)
+            pygame.draw.polygon(f, CHROME, poly, 2)
+            for pt in poly:                                     # fill the gaps at the corners
+                pygame.draw.circle(f, CHROME, pt, 1)
+        pygame.draw.line(f, CHROME_DARK, d0, d1, 5)
+        pygame.draw.line(f, CHROME, d0, d1, 3)
+        pygame.draw.line(f, CHROME_LIGHT, (d0[0] - 1, d0[1]), (d1[0] - 1, d1[1]), 1)
+        pygame.draw.line(f, CHROME_LIGHT, (8, 253), (236, 253), 1)                       # sill highlight
+        self.frame = f
+        self.mask = pygame.Surface((LW, LH), pygame.SRCALPHA)
+        pygame.draw.polygon(self.mask, (255, 255, 255, 255), main)
+        pygame.draw.polygon(self.mask, (255, 255, 255, 255), vent)
         self.sheen = pygame.Surface((LW, LH), pygame.SRCALPHA)
-        for i, a in enumerate((14, 9)):
-            x0 = 70 + i * 70
-            pygame.draw.polygon(self.sheen, (255, 255, 255, a), [(x0, 40), (x0 + 26, 40), (x0 - 60, 216), (x0 - 86, 216)])
+        for i, a in enumerate((13, 8)):
+            x0 = 90 + i * 80
+            pygame.draw.polygon(self.sheen, (255, 255, 255, a), [(x0, 22), (x0 + 30, 22), (x0 - 70, 254), (x0 - 100, 254)])
         self.sheen.blit(self.mask, (0, 0), special_flags=pygame.BLEND_RGBA_MIN)
 
-    def _build_mirror(self):
-        """Side mirror outside the glass at the front corner: painted housing, mirror glass."""
-        self.mirror_rect = pygame.Rect(20, 150, 74, 52)
-        r = self.mirror_rect
-        body, shade, shine = (58, 64, 80), (34, 38, 48), (92, 100, 120)
-        h = pygame.Surface(r.size, pygame.SRCALPHA)
-        pygame.draw.rect(h, shade, (0, 4, r.w, r.h - 4), border_radius=16)        # underside in shadow
-        pygame.draw.rect(h, body, (1, 0, r.w - 2, r.h - 8), border_radius=16)
-        pygame.draw.line(h, shine, (14, 3), (r.w - 14, 3), 2)                    # paint highlight
-        self.mirror_house = h
-        self.glass_rect = pygame.Rect(6, 7, r.w - 12, r.h - 19)
-        self.glass_mask = pygame.Surface(self.glass_rect.size, pygame.SRCALPHA)
-        pygame.draw.rect(self.glass_mask, (255, 255, 255, 255), (0, 0, *self.glass_rect.size), border_radius=11)
+        # small round chrome mirror outside the vent window, seen from behind
+        m = pygame.Surface((40, 46), pygame.SRCALPHA)
+        pygame.draw.line(m, CHROME_DARK, (22, 46), (20, 30), 4)                           # stalk
+        pygame.draw.circle(m, CHROME_DARK, (20, 18), 16)
+        for r, c in ((15, (120, 126, 140)), (12, CHROME), (7, (204, 210, 222))):        # domed shading
+            pygame.draw.circle(m, c, (20 - (15 - r) * 0.35, 18 - (15 - r) * 0.35), r)
+        pygame.draw.circle(m, CHROME_LIGHT, (14, 12), 3)                                   # highlight
+        pygame.draw.arc(m, (40, 54, 84), (4, 2, 32, 32), -0.6, 0.9, 2)                     # glimpse of glass
+        self.mirror = m
+        self.mirror_pos = (16, 208)
 
-    PREVIEW_AFTER = 20
-
+    # ------------------------------------------------------------- preview
     def preview(self, step):
         """Wipe a zigzag for the gallery image."""
         for _ in range(90):
             self.update(step)
-        pts = [(0.2, 0.3), (0.8, 0.3), (0.25, 0.45), (0.8, 0.52), (0.12, 0.6)]
+        pts = [(0.2, 0.22), (0.85, 0.24), (0.25, 0.4), (0.85, 0.5), (0.1, 0.66)]
         self.touch("down", pts[0][0] * self.w, pts[0][1] * self.h)
         for (x0, y0), (x1, y1) in zip(pts, pts[1:]):
             for i in range(1, 25):
@@ -232,10 +305,9 @@ class Scene(BaseScene):
             d = np.sqrt((xs - cx) ** 2 + (ys - cy) ** 2) / r
             fall = np.clip(1.15 - d, 0, 1)                             # soft edge
             self.fog[lo_x:hi_x, lo_y:hi_y] *= 1 - p.wipe * fall
-        # water pushed to the edge of the wipe gathers into drops
         moved = math.hypot(x1 - x0, y1 - y0)
         if p.drips > 0 and self.rng.random() < p.drips * min(1.0, moved / 10) * 0.6:
-            a = self.rng.uniform(0.15, math.pi - 0.15)                 # lower half of the finger
+            a = self.rng.uniform(0.15, math.pi - 0.15)                 # lower edge of the finger
             rr = r * CELL * 1.05
             self._spawn_drop(x1 + math.cos(a) * rr, y1 + math.sin(a) * rr)
         self.prev = self.finger
@@ -247,14 +319,11 @@ class Scene(BaseScene):
     # ----------------------------------------------------------------- update
     def update(self, dt):
         p = self.p
-        self.t += dt
-        for i, k in enumerate((0.12, 0.4, 1.0, 1.0)):
-            self.off[i] = (self.off[i] + p.speed * k * dt) % self.tw
-
+        for i, k in enumerate((0.05, 0.22, 0.75, 1.15, 1.6)):         # far, mid, poles, fence, grass
+            self.off[i] = (self.off[i] + p.speed * k * dt) % TILE
         if self.finger is not None:
             self._wipe()
 
-        # fog returns: patchy regrowth plus creep from foggy neighbours
         f = self.fog
         fmax = p.fog_max
         f += (fmax - f) * np.clip(dt / p.regrow_time * self.regrow_jit * 2.2, 0, 1)
@@ -264,7 +333,6 @@ class Scene(BaseScene):
             f += np.maximum(nb - f, 0) * min(1.0, p.creep * dt * 3)
         np.clip(f, 0, fmax, out=f)
 
-        # drops run down, stick, and clear a thin trail
         if p.ambient_drips > 0 and self.rng.random() < p.ambient_drips * dt:
             self._spawn_drop(self.rng.uniform(WIN.x + 10, WIN.right - 10), self.rng.uniform(WIN.y + 5, WIN.y + 60))
         alive = []
@@ -286,42 +354,29 @@ class Scene(BaseScene):
         self.drops = alive
 
     # ------------------------------------------------------------------- draw
-    def _city(self, surf):
+    def _land(self, surf):
         surf.blit(self.sky, (0, 0))
-        for layer, i in ((self.far, 0), (self.mid, 1), (self.poles, 2)):
-            x0 = self.off[i] - self.tw
+        for layer, i in ((self.far, 0), (self.mid, 1), (self.poles, 2), (self.fence, 3), (self.grass, 4)):
+            x0 = self.off[i] - TILE
             surf.blit(layer, (x0, 0))
-            surf.blit(layer, (x0 + self.tw, 0))
-        x0 = self.off[3] - self.tw
-        surf.blit(self.glows, (x0, 0), special_flags=pygame.BLEND_RGB_ADD)
-        surf.blit(self.glows, (x0 + self.tw, 0), special_flags=pygame.BLEND_RGB_ADD)
-        surf.blit(self.street, (0, GROUND))
-
-    def _mirror(self, view):
-        r = self.mirror_rect
-        # the glass shows the street behind: a flipped slice of the view
-        slice_ = view.subsurface(pygame.Rect(90, 100, 110, 110)).copy()
-        img = pygame.transform.scale(pygame.transform.flip(slice_, True, False), self.glass_rect.size)
-        glass = pygame.Surface(self.glass_rect.size, pygame.SRCALPHA)
-        glass.blit(img, (0, 0))
-        glass.fill((24, 26, 34, 0), special_flags=pygame.BLEND_RGB_ADD)          # silvered: never pitch black
-        glass.blit(self.glass_mask, (0, 0), special_flags=pygame.BLEND_RGBA_MIN)
-        pygame.draw.polygon(view, (30, 34, 42), [(22, 216), (34, 216), (52, 196), (40, 194)])   # mount
-        view.blit(self.mirror_house, r.topleft)
-        view.blit(glass, (r.x + self.glass_rect.x, r.y + self.glass_rect.y))
+            surf.blit(layer, (x0 + TILE, 0))
+            if i == 0:                                              # yard lights glow over the far layer
+                for _, lx, ly in self.lights:
+                    for dx in (x0, x0 + TILE):
+                        surf.blit(self.glow, (lx + dx - 12, ly - 12), special_flags=pygame.BLEND_RGB_ADD)
+                        surf.set_at((int(lx + dx), ly), (255, 228, 170))
 
     def draw(self, surf):
         p = self.p
         view = self.view
-        self._city(view)
-        self._mirror(view)
+        self._land(view)
+        view.blit(self.mirror, self.mirror_pos)                         # outside the glass
 
-        # fog: blurred, brightened copy of the window view, with density as alpha
         win = view.subsurface(WIN)
         tiny = pygame.transform.smoothscale(win, (max(2, self.gw // 4), max(2, self.gh // 4)))
-        small = pygame.transform.smoothscale(tiny, (self.gw, self.gh))     # heavy blur: lights bloom
+        small = pygame.transform.smoothscale(tiny, (self.gw, self.gh))  # heavy blur: lights bloom
         rgb = pygame.surfarray.array3d(small).astype(np.float32)
-        rgb = (rgb * 1.5 * (1 - p.haze * 0.55) + HAZE * p.haze * 0.55 + 6) * self.speckle   # glowing, milky
+        rgb = (rgb * 1.4 * (1 - p.haze * 0.55) + HAZE * p.haze * 0.55 + 6) * self.speckle
         pygame.surfarray.blit_array(self.fog_surf, np.clip(rgb, 0, 255).astype(np.uint8))
         alpha = pygame.surfarray.pixels_alpha(self.fog_surf)
         alpha[:] = np.clip(self.fog * 255, 0, 255).astype(np.uint8)
@@ -331,19 +386,9 @@ class Scene(BaseScene):
         low = self.low
         low.blit(view, (0, 0))
         low.blit(fog_big, WIN.topleft, area=pygame.Rect(0, 0, WIN.w, WIN.h))
-        for x, y, vy, stuck, life in self.drops:                        # droplets
-            low.set_at((int(x), int(y)), (226, 232, 240))
-            low.set_at((int(x), int(y) - 1), (150, 160, 175))
+        for x, y, vy, stuck, life in self.drops:
+            low.set_at((int(x), int(y)), (222, 230, 244))
+            low.set_at((int(x), int(y) - 1), (146, 160, 186))
         low.blit(self.sheen, (0, 0))
-
-        # interior, brightened as a street lamp passes the window
         low.blit(self.frame, (0, 0))
-        if p.lamp_light > 0:
-            centre = WIN.centerx
-            near = min(abs(((lx - 15 + self.off[3] - self.tw) % self.tw) - centre) for lx in self.lamp_x)
-            k = max(0.0, 1 - near / 110) ** 2 * min(1.0, p.speed / 20) * p.lamp_light
-            if k > 0.01:
-                self.frame_lit.set_alpha(int(min(1.0, k) * 140))
-                low.blit(self.frame_lit, (0, 0))
-
         surf.blit(pygame.transform.scale(low, (self.w, self.h)), (0, 0))
