@@ -21,6 +21,7 @@ import pygame
 
 from playground.noise import ValueNoise2D, lerp_color
 from playground.scene import BaseScene, Param
+from playground.shapes import blade_shapes
 
 SKY_TOP, SKY_LOW = (30, 90, 178), (122, 174, 216)
 CLOUD, CLOUD_SHADE, CLOUD_DEEP = (250, 250, 252), (206, 216, 232), (176, 190, 214)
@@ -37,16 +38,6 @@ FLOWER, FLOWER_CORE, WHITE_FLOWER = (246, 228, 168), (226, 182, 96), (250, 250, 
 
 HORIZON = 250          # sky/lake boundary (design px, 480x640 layout)
 K = 6                  # points along each blade's centreline
-
-
-def blade_shapes(x0, y0, L, a0, curve, theta, k=K):
-    """Centreline points for many blades. Returns xs, ys of shape (n, k+1) and angles (n, k)."""
-    t = (np.arange(k) + 0.5) / k
-    ang = a0[:, None] + (curve + theta)[:, None] * t[None, :] ** 1.5
-    seg = (L / k)[:, None]
-    xs = np.concatenate([x0[:, None], x0[:, None] + np.cumsum(np.sin(ang) * seg, 1)], 1)
-    ys = np.concatenate([y0[:, None], y0[:, None] - np.cumsum(np.cos(ang) * seg, 1)], 1)
-    return xs, ys, ang
 
 
 class Scene(BaseScene):
@@ -329,10 +320,10 @@ class Scene(BaseScene):
             pygame.draw.lines(low, c, False, list(zip(x, y)), max(1, int(2 * s)))
 
         f = self.fg
-        fxs, fys, fang = blade_shapes(f["x"], f["y"], f["L"], f["a0"], f["curve"], f["th"])
+        fxs, fys, fang = blade_shapes(f["x"], f["y"], f["L"], f["a0"], f["curve"], f["th"], K)
         pl = self.pl
         if len(pl["x"]):
-            pxs, pys, pang = blade_shapes(pl["x"], pl["y"], pl["L"], pl["a0"], pl["curve"], pl["th"])
+            pxs, pys, pang = blade_shapes(pl["x"], pl["y"], pl["L"], pl["a0"], pl["curve"], pl["th"], K)
         fl = self.fl
         lxs, lys, _ = blade_shapes(fl["x"], fl["y"], fl["L"], fl["a0"], fl["curve"], fl["th"], 3)
 

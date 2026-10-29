@@ -10,4 +10,4 @@ Regenerate previews and this page with `python tools/make_previews.py`.
 | ![grass](grass/preview.png) | **[Grass in the wind](grass/README.md)**<br>`python run.py grass`<br>Low-resolution field of grass blowing in the wind |
 | ![hillside](hillside/preview.png) | **[Lakeside hillside](hillside/README.md)**<br>`python run.py hillside`<br>A painted lakeside hillside: tall grass and pink plumes in the summer wind |
 | ![meadow](meadow/preview.png) | **[Meadow from above](meadow/README.md)**<br>`python run.py meadow`<br>A meadow seen from directly above |
-| ![tallgrass](tallgrass/preview.png) | **[Tall grass, up close](tallgrass/README.md)**<br>`python run.py tallgrass`<br>A stand of tall grass seen from above and to the side; run your finger through it |
+| ![tallgrass](tallgrass/preview.png) | **[Barley field](tallgrass/README.md)**<br>`python run.py tallgrass`<br>A barley field in the wind, seen from eye level; run your finger through it |
