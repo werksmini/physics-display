@@ -5,7 +5,7 @@
 
 Each scene runs headless for a few seconds with its saved preset (or defaults).
 A scene can define PREVIEW_TOUCH = (x_frac, y_frac) to hold a finger there
-during the capture, e.g. to show wind.
+during the capture, e.g. to show wind, or a preview(step) method to script it.
 """
 import os
 import sys
@@ -33,9 +33,14 @@ def render(name):
     ctrl = Controller({name: name}, preset_path)
     ctrl.load_scene(name, mod.Scene)
     scene = mod.Scene(W, H, Values(ctrl))
-    for _ in range(120):
-        scene.update(STEP)
-    touch = getattr(mod.Scene, "PREVIEW_TOUCH", None)
+    if hasattr(scene, "preview"):            # a scene can script its own preview
+        scene.preview(STEP)
+        touch = None
+        mod.Scene.PREVIEW_AFTER = getattr(mod.Scene, "PREVIEW_AFTER", 0)
+    else:
+        for _ in range(120):
+            scene.update(STEP)
+        touch = getattr(mod.Scene, "PREVIEW_TOUCH", None)
     if touch:
         scene.touch("down", touch[0] * W, touch[1] * H)
     for _ in range(int(getattr(mod.Scene, "PREVIEW_AFTER", 150))):

@@ -7,7 +7,11 @@ Regenerate previews and this page with `python tools/make_previews.py`.
 | Preview | Scene |
 |---|---|
 | ![balls](balls/preview.png) | **[Bouncing balls](balls/README.md)**<br>`python run.py balls`<br>Rigid-body balls in a box; tap to blast them apart |
+| ![boids](boids/preview.png) | **[Flocking birds](boids/README.md)**<br>`python run.py boids`<br>A flock of birds wheeling over a dusk sky (boids) |
 | ![grass](grass/preview.png) | **[Grass in the wind](grass/README.md)**<br>`python run.py grass`<br>Low-resolution field of grass blowing in the wind |
 | ![hillside](hillside/preview.png) | **[Lakeside hillside](hillside/README.md)**<br>`python run.py hillside`<br>A painted lakeside hillside: tall grass and pink plumes in the summer wind |
+| ![ink](ink/preview.png) | **[Ink in water](ink/README.md)**<br>`python run.py ink`<br>Ink in water: stir coloured ink through a fluid with your finger |
 | ![meadow](meadow/preview.png) | **[Meadow from above](meadow/README.md)**<br>`python run.py meadow`<br>A meadow seen from directly above |
+| ![particlelife](particlelife/preview.png) | **[Particle life](particlelife/README.md)**<br>`python run.py particlelife`<br>Particle life: coloured particles that chase and flee each other by type |
+| ![sand](sand/preview.png) | **[Falling sand](sand/README.md)**<br>`python run.py sand`<br>Falling sand: pour sand, water and stone and watch them pile, flow and settle |
 | ![tallgrass](tallgrass/preview.png) | **[Barley field](tallgrass/README.md)**<br>`python run.py tallgrass`<br>A barley field in the wind, seen from eye level; run your finger through it |
