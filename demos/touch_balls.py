@@ -10,6 +10,8 @@ import random
 import pygame
 import pymunk
 
+from touchinput import TouchScreen
+
 W, H = 480, 640          # panel resolution (portrait)
 FPS = 60
 PHYSICS_STEPS = 2        # substeps per frame for stability
@@ -82,21 +84,27 @@ def main():
     for _ in range(12):
         add_ball(space, (random.uniform(40, w - 40), random.uniform(40, h / 2)), balls)
 
+    # On the Pi, read the touchscreen directly (handles its scale quirk).
+    # On a laptop this is None and mouse/touch come through pygame instead.
+    touch = None if args.window else TouchScreen.open(w, h)
+
     running = True
     while running:
+        taps = touch.taps() if touch else []
         for e in pygame.event.get():
-            tap = None
             if e.type == pygame.QUIT:
                 running = False
             elif e.type == pygame.KEYDOWN and e.key in (pygame.K_ESCAPE, pygame.K_q):
                 running = False
+            elif touch:
+                continue                               # ignore pygame's copy of touches
             elif e.type == pygame.FINGERDOWN:          # touch (normalized 0..1)
-                tap = (e.x * w, e.y * h)
+                taps.append((e.x * w, e.y * h))
             elif e.type == pygame.MOUSEBUTTONDOWN and not getattr(e, "touch", False):
-                tap = e.pos                            # mouse, or touch-as-mouse
-            if tap:
-                blast(balls, tap)
-                add_ball(space, tap, balls)
+                taps.append(e.pos)                     # mouse
+        for tap in taps:
+            blast(balls, tap)
+            add_ball(space, tap, balls)
 
         dt = 1.0 / FPS
         for _ in range(PHYSICS_STEPS):
