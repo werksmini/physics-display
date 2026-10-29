@@ -18,6 +18,7 @@ class Controller:
         self.schema = []                      # list of Param
         self.values = {}
         self.show_fps = True
+        self.flip_landscape = False
         self.pending_scene = None
         self.reset_requested = False
         self.quit_requested = False
@@ -59,6 +60,7 @@ class Controller:
                 "params": [dict(p.to_json(), value=self.values.get(p.name))
                            for p in self.schema],
                 "show_fps": self.show_fps,
+                "flip_landscape": self.flip_landscape,
                 "error": self.last_error,
             }
 
@@ -143,6 +145,8 @@ class _Handler(BaseHTTPRequestHandler):
             return
         elif self.path == "/api/quit":
             c.quit_requested = True
+        elif self.path == "/api/flip":
+            c.flip_landscape = bool(body.get("on", False))
         elif self.path == "/api/fps":
             c.show_fps = bool(body.get("on", True))
         else:

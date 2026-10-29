@@ -27,7 +27,8 @@ the scene's code, so after editing a scene file (or `git pull`) you don't need t
 
 ### Writing a scene
 
-Make a folder `scenes/<name>/` with a `scene.py` containing a `Scene` class: declare `PARAMS`,
+Make a folder `scenes/<name>/` with a `scene.py` containing a `Scene` class: declare `PARAMS`
+(and `LANDSCAPE = True` for a sideways 640×480 scene; the runner rotates it onto the panel),
 then fill in `setup`, `update(dt)`, `draw(surf)` and `touch(kind, x, y)` (see `playground/scene.py`).
 Add a `README.md`, then run `python tools/make_previews.py <name>`. "Save as default" in the panel
 writes `scenes/<name>/preset.json`; commit it to keep it.

@@ -2,47 +2,52 @@
 
 ![preview](preview.png)
 
-Riding in the passenger seat of a small classic 1970s sedan down a rural Midwest road at blue hour. The big side window is fogged up; wipe it with your finger to see out. The fog slowly comes back.
+**Landscape.** Riding in the passenger seat of a small classic 1970s sedan on a dreary San Francisco day. The side window is fogged up; wipe it with your finger to see out. The fog slowly comes back.
 
-The car is styled after the BMW 2002 era: a wide, airy greenhouse with thin pillars, bright chrome trim, a front vent window, a small round chrome mirror, and a pleated cognac vinyl door with a chrome window crank. No badges or logos.
+The layout follows a photo taken in a BMW 2002, turned to look out the passenger door:
+- a sliver of windshield and black dash at the left, with an intermittent wiper clearing drizzle
+- the slanted black A-pillar
+- the front vent window with a chrome divider
+- the big side window, with the B-pillar at the right
+- a tan vinyl door panel with a chrome window crank and door pull
+- a beige headliner with the sun visor overhead
+- a rectangular chrome mirror outside at the front of the door
+
+No badges or logos.
 
 ```bash
-python run.py window            # Pi
-python run.py window --window   # laptop
+python run.py window            # Pi: hold the screen sideways (Flip landscape in the panel turns it the other way)
+python run.py window --window   # laptop: opens a landscape window
 ```
 
 ## Touch
 
-Swipe to wipe the condensation away: you're drawing on the window. Through the clear patches you see the fields sliding past and the round chrome mirror outside the vent window. Droplets gather at the edges of your wipes and run down the glass.
+Swipe to wipe the condensation away: you're drawing on the window. Droplets gather at the edges of your wipes and run down the glass.
 
 ## How it works
 
-- **The view is wide-angle:** the glass fills about 70% of the screen.
-- **The land** is made of looping layers drawn once at startup, each scrolling at its own speed (parallax). The car's front is to your left, so everything slides left to right. From far to near:
-  - **Horizon:** tree lines, farmsteads with a lit window and a glowing yard light, silos and a water tower.
-  - **Fields:** round hay bales scattered through them.
-  - **Telephone poles:** their wires sag between poles and appear to rise and fall as they pass.
-  - **Fence posts and roadside grass:** the nearest and fastest layers.
-- **The sky:** blue hour, with a few early stars and a thin moon.
-- **The round chrome mirror** is outside the glass, so it's under the fog too.
-- **The fog** is a coarse density map over the glass. Each frame, a heavily blurred, brightened copy of the view is laid over the clear view, with the fog density as its transparency. Under thick fog you only see glowing blobs of light.
-- **Weight:**
-  - Fog grows back patchily, faster in some spots than others (**Fog return time**), and creeps in from foggy neighbours (**Fog creep**), so wipe edges soften and close in.
-  - Droplets run down, catch on the glass for a moment, then carry on, cutting thin clear trails that fog over again.
+- **Landscape:** the scene sets `LANDSCAPE = True`. The runner draws it at 640×480 and rotates it onto the portrait panel, and rotates your touches to match.
+- **The street** is made of looping layers drawn once at startup, each scrolling at its own speed (parallax). The front of the car is to your left, so everything slides left to right. From far to near:
+  - overcast sky with drifting fog banks
+  - a hill of houses fading into the mist
+  - rows of muted Victorian and Edwardian houses with bay windows, garages and front stairs, stepping up and down a hilly street
+  - street trees and parked cars, on wet asphalt
+- **Few landmarks on purpose:** just the feel of an ordinary SF street, with no bridge and no famous towers.
+- **The windshield** shows the street ahead with lane markings rushing toward you. Drizzle dots build up on it until the wiper sweeps them away (**Wiper interval**).
+- **The fog** is a coarse density map over the side glass. A heavily blurred, whitened copy of the view is laid over the clear view, with the fog density as its transparency.
+- **Weight:** fog grows back patchily (**Fog return time**) and creeps in from foggy neighbours (**Fog creep**). Droplets run down, catch for a moment, and leave clear trails that fog over again.
 
 ## Settings worth playing with
 
 | Setting | Try |
 |---|---|
-| Driving speed | 0 to pull over on the shoulder |
-| Fog return time | 3 for a cold night where it fogs right back; 40 for a lazy return |
-| Fog creep | 0 for crisp drawn lines that just fade; 2+ for edges that close in |
-| Drips from wipes / Random drips | Up for a wetter window |
-| Fog brightness | Higher for milky, glowing fog |
+| Driving speed | 0 to sit parked |
+| Fog return time | 3 for glass that fogs right back; 40 for a lazy return |
+| Fog creep | 0 for crisp drawn lines that just fade |
+| Drizzle / Wiper interval | Heavier drizzle with a faster wiper for a proper downpour |
 
 ## Ideas
 
-- Time slider: dusk deepening into night, with fireflies over the fields
-- Rain on the outside of the glass, with drops streaking sideways at speed
-- An oncoming car's headlights sweeping the interior
+- A cable car bell and a MUNI bus passing
+- Streetlights flickering on as the afternoon darkens
 - Writing with a fingertip leaves a faint ghost that reappears when the fog returns (like real glass)

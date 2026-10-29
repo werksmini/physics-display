@@ -57,6 +57,7 @@ class Values:
 class BaseScene:
     TITLE = ""
     PARAMS: list = []
+    LANDSCAPE = False        # True: drawn 640x480 and rotated onto the portrait panel
 
     def __init__(self, w, h, params):
         self.w, self.h, self.p = w, h, params

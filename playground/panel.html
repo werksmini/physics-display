@@ -51,6 +51,7 @@
 <body>
 <main>
   <header><span id="dot" class="dot"></span><h1>Playground</h1>
+    <label class="toggle" title="For landscape scenes: turn the picture the other way up"><input type="checkbox" id="flip"> flip landscape</label>
     <label class="toggle"><input type="checkbox" id="fps"> fps</label></header>
   <select id="scene" aria-label="Scene"></select>
   <div id="error" class="error" hidden></div>
@@ -94,6 +95,7 @@ function render(s) {
   $("scene").innerHTML = s.scenes.map(x =>
     `<option value="${x.name}" ${x.name === s.scene ? "selected" : ""}>${x.title}</option>`).join("");
   $("fps").checked = s.show_fps;
+  $("flip").checked = s.flip_landscape;
   $("error").hidden = !s.error; $("error").textContent = s.error || "";
   const box = $("params"); box.innerHTML = "";
   if (!s.params.length) box.innerHTML = '<div class="row note">This scene has no settings.</div>';
@@ -139,6 +141,7 @@ $("reset").onclick = async () => { await api("/api/reset", {}); toast("Scene res
 $("defaults").onclick = async () => { await api("/api/defaults", {}); setTimeout(load, 300); toast("Defaults restored"); };
 $("save").onclick = async () => { await api("/api/save", {}); toast("Saved as this scene's default"); };
 $("fps").onchange = (e) => api("/api/fps", { on: e.target.checked });
+$("flip").onchange = (e) => api("/api/flip", { on: e.target.checked });
 $("stop").onclick = async () => {
   if (!confirm("Stop the program on the Pi? Start it again over SSH.")) return;
   await api("/api/quit", {}).catch(() => {}); toast("Stopped");

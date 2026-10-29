@@ -32,7 +32,8 @@ def render(name):
     mod = load_module(name)
     ctrl = Controller({name: name}, preset_path)
     ctrl.load_scene(name, mod.Scene)
-    scene = mod.Scene(W, H, Values(ctrl))
+    w, h = (H, W) if getattr(mod.Scene, "LANDSCAPE", False) else (W, H)
+    scene = mod.Scene(w, h, Values(ctrl))
     if hasattr(scene, "preview"):            # a scene can script its own preview
         scene.preview(STEP)
         touch = None
@@ -42,13 +43,13 @@ def render(name):
             scene.update(STEP)
         touch = getattr(mod.Scene, "PREVIEW_TOUCH", None)
     if touch:
-        scene.touch("down", touch[0] * W, touch[1] * H)
+        scene.touch("down", touch[0] * w, touch[1] * h)
     for _ in range(int(getattr(mod.Scene, "PREVIEW_AFTER", 150))):
         scene.update(STEP)
-    surf = pygame.Surface((W, H))
+    surf = pygame.Surface((w, h))
     scene.draw(surf)
     out = SCENES_DIR / name / "preview.png"
-    pygame.image.save(pygame.transform.smoothscale(surf, (W // 2, H // 2)), str(out))
+    pygame.image.save(pygame.transform.smoothscale(surf, (w // 2, h // 2)), str(out))
     return mod
 
 

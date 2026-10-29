@@ -93,7 +93,50 @@ def _stop_on_signal(signum, frame):
     raise KeyboardInterrupt          # run the normal clean-up (clear screen, free the port)
 
 
-def build_scene(ctrl, name, w, h, switching):
+class Stage:
+    """Where scenes draw. Portrait scenes draw straight to the screen. Landscape
+    scenes (Scene.LANDSCAPE = True) draw on a 640x480 canvas that is rotated onto
+    the portrait panel, with touches rotated to match; in a laptop window they
+    simply get a landscape window."""
+
+    def __init__(self, screen, fb, window):
+        self.screen, self.fb, self.window = screen, fb, window
+        self.landscape = False
+        self.canvas = screen
+
+    def configure(self, landscape):
+        if landscape == self.landscape and self.canvas is not None:
+            return
+        self.landscape = landscape
+        if self.window:
+            self.screen = pygame.display.set_mode((H, W) if landscape else (W, H))
+            self.canvas = self.screen
+        else:
+            sw, sh = self.screen.get_size()
+            self.canvas = pygame.Surface((sh, sw)) if landscape else self.screen
+
+    @property
+    def size(self):
+        return self.canvas.get_size()
+
+    def map_touch(self, x, y, flip):
+        if not self.landscape or self.window:
+            return x, y
+        cw, ch = self.canvas.get_size()
+        if flip:                              # canvas rotated clockwise onto the panel
+            return y, ch - 1 - x
+        return cw - 1 - y, x                  # canvas rotated counter-clockwise (default)
+
+    def present(self, flip):
+        if self.landscape and not self.window:
+            self.screen.blit(pygame.transform.rotate(self.canvas, -90 if flip else 90), (0, 0))
+        if self.fb:
+            self.fb.show(self.screen)
+        else:
+            pygame.display.flip()
+
+
+def build_scene(ctrl, name, stage, switching):
     """Import (or re-import, picking up code edits) and construct a scene."""
     mod = load_module(name)
     if switching:
@@ -102,7 +145,8 @@ def build_scene(ctrl, name, w, h, switching):
         ctrl.schema = list(mod.Scene.PARAMS)
         for p in ctrl.schema:
             ctrl.values.setdefault(p.name, p.default)
-    return mod.Scene(w, h, Values(ctrl))
+    stage.configure(bool(getattr(mod.Scene, "LANDSCAPE", False)))
+    return mod.Scene(*stage.size, Values(ctrl))
 
 
 def main():
@@ -145,7 +189,8 @@ def main():
     touch = None if window else EvdevTouch.open(w, h)
     font = pygame.font.Font(None, 22)
     clock = pygame.time.Clock()
-    scene = build_scene(ctrl, args.scene, w, h, switching=True)
+    stage = Stage(screen, fb, window)
+    scene = build_scene(ctrl, args.scene, stage, switching=True)
 
     acc = 0.0
     dragging = False
@@ -160,7 +205,7 @@ def main():
             name = ctrl.take_pending_scene()
             if name or ctrl.take_reset():
                 try:
-                    scene = build_scene(ctrl, name or ctrl.scene_name, w, h,
+                    scene = build_scene(ctrl, name or ctrl.scene_name, stage,
                                         switching=bool(name))
                     ctrl.last_error = ""
                 except Exception:
@@ -185,20 +230,18 @@ def main():
                     dragging = False
                     events.append(("up", *e.pos))
             for kind, x, y in events:
-                scene.touch(kind, x, y)
+                scene.touch(kind, *stage.map_touch(x, y, ctrl.flip_landscape))
 
             # fixed-step update, then draw
             while acc >= STEP:
                 scene.update(STEP)
                 acc -= STEP
-            scene.draw(screen)
+            canvas = stage.canvas
+            scene.draw(canvas)
             if ctrl.show_fps:
-                screen.blit(font.render(f"{clock.get_fps():3.0f} fps", True,
+                canvas.blit(font.render(f"{clock.get_fps():3.0f} fps", True,
                                         (230, 230, 230), (0, 0, 0)), (4, 4))
-            if fb:
-                fb.show(screen)
-            else:
-                pygame.display.flip()
+            stage.present(ctrl.flip_landscape)
     except KeyboardInterrupt:
         pass
     finally:
