@@ -6,8 +6,29 @@ Notes, setup guides and research live in the Notion workspace ("Physics Display 
 
 ## Layout
 
-- `demos/` – runnable experiments
+- `run.py` – runs a playground scene and serves its control panel
+- `playground/` – scene runner, touch + framebuffer drivers, web control panel
+- `playground/scenes/` – one file per scene (`grass.py`, `balls.py`)
+- `presets/` – saved slider settings per scene ("Save as default" in the panel)
+- `demos/` – earlier standalone experiments
 - `config/` – known-good `config.txt` snippets, with OS version noted in each file
+
+## Playground
+
+```bash
+python run.py grass            # on the Pi (fullscreen on the panel)
+python run.py grass --window   # on the laptop (mouse acts as touch)
+python run.py --list           # available scenes
+```
+
+Then open the control panel: `http://192.168.0.229:8000` (Pi) or `http://localhost:8000` (laptop).
+Sliders change the running scene live; settings marked ↻ restart it. "Restart scene" also reloads
+the scene's code, so after editing a scene file (or `git pull`) you don't need to stop the program.
+
+### Writing a scene
+
+Make `playground/scenes/<name>.py` with a `Scene` class: declare `PARAMS`, then fill in
+`setup`, `update(dt)`, `draw(surf)` and `touch(kind, x, y)`. See `playground/scene.py`.
 
 ## Quick start
 
@@ -21,7 +42,7 @@ python3 demos/touch_balls.py            # Pi: fullscreen on the panel
 ## On the Pi (Pi OS Lite, no desktop)
 
 ```bash
-sudo apt install -y python3-pygame python3-evdev
+sudo apt install -y python3-pygame python3-evdev python3-numpy
 python3 -m venv --system-site-packages .venv && source .venv/bin/activate
 pip install pymunk
 sudo usermod -aG input,video,render $USER   # then log out and back in
