@@ -5,6 +5,7 @@ Run on the Pi (fullscreen on the panel):   python3 demos/touch_balls.py
 Run on a laptop (window, mouse = touch):  python3 demos/touch_balls.py --window
 """
 import argparse
+import os
 import random
 
 import pygame
@@ -61,17 +62,36 @@ def blast(balls, pos):
                 s.body.position)
 
 
+def open_display(args):
+    """Return (screen_surface, framebuffer_or_None)."""
+    if args.window:
+        return pygame.display.set_mode((W, H)), None
+    if not args.fb:
+        try:
+            screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+            pygame.mouse.set_visible(False)
+            return screen, None
+        except pygame.error as err:
+            print(f"SDL display failed ({err}); falling back to /dev/fb0")
+    # Framebuffer path: SDL runs headless, we copy frames to /dev/fb0 ourselves.
+    from fbdisplay import FrameBuffer
+    pygame.display.quit()
+    os.environ["SDL_VIDEODRIVER"] = "dummy"
+    pygame.display.init()
+    pygame.display.set_mode((1, 1))
+    fb = FrameBuffer()
+    return pygame.Surface(fb.size), fb
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--window", action="store_true", help="run in a window")
+    ap.add_argument("--fb", action="store_true",
+                    help="draw straight to /dev/fb0 (skip SDL's display driver)")
     args = ap.parse_args()
 
     pygame.init()
-    if args.window:
-        screen = pygame.display.set_mode((W, H))
-    else:
-        screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
-        pygame.mouse.set_visible(False)
+    screen, fb = open_display(args)
     w, h = screen.get_size()
     pygame.display.set_caption("touch balls")
     clock = pygame.time.Clock()
@@ -88,6 +108,18 @@ def main():
     # On a laptop this is None and mouse/touch come through pygame instead.
     touch = None if args.window else TouchScreen.open(w, h)
 
+    try:
+        loop(screen, fb, touch, space, balls, clock, font, w, h)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        if fb:
+            fb.clear()
+            fb.close()
+        pygame.quit()
+
+
+def loop(screen, fb, touch, space, balls, clock, font, w, h):
     running = True
     while running:
         taps = touch.taps() if touch else []
@@ -116,10 +148,11 @@ def main():
             pygame.draw.circle(screen, s.color, (int(x), int(y)), int(s.radius))
         screen.blit(font.render(f"{clock.get_fps():4.0f} fps  {len(balls)} balls",
                                 True, (140, 140, 160)), (8, 8))
-        pygame.display.flip()
+        if fb:
+            fb.show(screen)
+        else:
+            pygame.display.flip()
         clock.tick(FPS)
-
-    pygame.quit()
 
 
 if __name__ == "__main__":
