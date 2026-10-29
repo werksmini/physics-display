@@ -9,10 +9,14 @@ While it runs, open the control panel in a browser:
     http://localhost:8000      (when running on the laptop)
 """
 import argparse
+import errno
 import os
+import signal
 import socket
 import sys
+import time
 import traceback
+import urllib.request
 
 import pygame
 
@@ -59,6 +63,36 @@ def local_ip():
         return "localhost"
 
 
+def claim_panel(ctrl, port):
+    """Start the control panel. If another copy of run.py already holds the port,
+    ask it to stop (handoff), then take over."""
+    asked = False
+    deadline = time.time() + 5
+    while True:
+        try:
+            return start_server(ctrl, port)
+        except OSError as err:
+            if err.errno != errno.EADDRINUSE:
+                raise
+            if not asked:
+                print("Another scene is already running; asking it to stop...")
+                try:
+                    req = urllib.request.Request(f"http://127.0.0.1:{port}/api/quit", data=b"{}",
+                                                 headers={"Content-Type": "application/json"})
+                    urllib.request.urlopen(req, timeout=1.5)
+                except Exception:
+                    pass                      # not one of ours, or too old to know /api/quit
+                asked = True
+            if time.time() > deadline:
+                raise OSError(errno.EADDRINUSE,
+                              f"port {port} is still in use. Stop the other program with: pkill -f run.py")
+            time.sleep(0.2)
+
+
+def _stop_on_signal(signum, frame):
+    raise KeyboardInterrupt          # run the normal clean-up (clear screen, free the port)
+
+
 def build_scene(ctrl, name, w, h, switching):
     """Import (or re-import, picking up code edits) and construct a scene."""
     mod = load_module(name)
@@ -91,29 +125,36 @@ def main():
         sys.exit(f"unknown scene '{args.scene}'. Try: {', '.join(available)}")
 
     window = args.window or not sys.platform.startswith("linux")
+    signal.signal(signal.SIGTERM, _stop_on_signal)
+    if hasattr(signal, "SIGHUP"):                  # SSH window closed
+        signal.signal(signal.SIGHUP, _stop_on_signal)
+
+    # claim the panel first, so a copy that's already running hands over the screen
+    ctrl = Controller(available, preset_path)
+    if not args.no_panel:
+        try:
+            claim_panel(ctrl, args.port)
+            host = "localhost" if window else local_ip()
+            print(f"Control panel: http://{host}:{args.port}")
+        except OSError as err:
+            print(f"Control panel not started: {err}")
+
     pygame.init()
     screen, fb = open_display(window, args.fb)
     w, h = screen.get_size()
     touch = None if window else EvdevTouch.open(w, h)
     font = pygame.font.Font(None, 22)
     clock = pygame.time.Clock()
-
-    ctrl = Controller(available, preset_path)
     scene = build_scene(ctrl, args.scene, w, h, switching=True)
-
-    if not args.no_panel:
-        try:
-            start_server(ctrl, args.port)
-            host = "localhost" if window else local_ip()
-            print(f"Control panel: http://{host}:{args.port}")
-        except OSError as err:
-            print(f"Control panel not started: {err}")
 
     acc = 0.0
     dragging = False
     try:
         while True:
             acc += min(clock.tick(60) / 1000, STEP * MAX_STEPS)
+            if ctrl.quit_requested:                # another copy took over, or Stop in the panel
+                print("Stopping (requested from the control panel or a new run).")
+                return
 
             # scene switch / rebuild requested from the panel
             name = ctrl.take_pending_scene()

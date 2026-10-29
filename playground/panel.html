@@ -59,6 +59,7 @@
     <button class="primary" id="save">Save as default</button>
     <button id="reset">Restart scene</button>
     <button id="defaults">Restore defaults</button>
+    <button id="stop">Stop program</button>
   </div>
   <p class="note">↻ marks settings that restart the scene when changed. "Restart scene" also
     reloads the scene's code, so edits show up without stopping the program.</p>
@@ -138,6 +139,10 @@ $("reset").onclick = async () => { await api("/api/reset", {}); toast("Scene res
 $("defaults").onclick = async () => { await api("/api/defaults", {}); setTimeout(load, 300); toast("Defaults restored"); };
 $("save").onclick = async () => { await api("/api/save", {}); toast("Saved as this scene's default"); };
 $("fps").onchange = (e) => api("/api/fps", { on: e.target.checked });
+$("stop").onclick = async () => {
+  if (!confirm("Stop the program on the Pi? Start it again over SSH.")) return;
+  await api("/api/quit", {}).catch(() => {}); toast("Stopped");
+};
 load(); setInterval(poll, 2500);
 </script>
 </body>

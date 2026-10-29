@@ -20,6 +20,7 @@ class Controller:
         self.show_fps = True
         self.pending_scene = None
         self.reset_requested = False
+        self.quit_requested = False
         self.last_error = ""
 
     # --- called from the render loop -------------------------------------
@@ -140,6 +141,8 @@ class _Handler(BaseHTTPRequestHandler):
         elif self.path == "/api/save":
             self._send(200, json.dumps({"saved": c.save_preset()}))
             return
+        elif self.path == "/api/quit":
+            c.quit_requested = True
         elif self.path == "/api/fps":
             c.show_fps = bool(body.get("on", True))
         else:
@@ -149,6 +152,7 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 def start_server(controller, port):
+    ThreadingHTTPServer.allow_reuse_address = True
     srv = ThreadingHTTPServer(("0.0.0.0", port), _Handler)
     srv.daemon_threads = True
     srv.controller = controller
