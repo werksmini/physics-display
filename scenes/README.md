@@ -15,3 +15,4 @@ Regenerate previews and this page with `python tools/make_previews.py`.
 | ![particlelife](particlelife/preview.png) | **[Particle life](particlelife/README.md)**<br>`python run.py particlelife`<br>Particle life: coloured particles that chase and flee each other by type |
 | ![sand](sand/preview.png) | **[Falling sand](sand/README.md)**<br>`python run.py sand`<br>Falling sand: pour sand, water and stone and watch them pile, flow and settle |
 | ![tallgrass](tallgrass/preview.png) | **[Barley field](tallgrass/README.md)**<br>`python run.py tallgrass`<br>A barley field in the wind, seen from eye level; run your finger through it |
+| ![window](window/preview.png) | **[Foggy car window](window/README.md)**<br>`python run.py window`<br>A foggy car window at night: wipe the condensation to see the city go by |
