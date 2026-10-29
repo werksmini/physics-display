@@ -9,38 +9,21 @@ While it runs, open the control panel in a browser:
     http://localhost:8000      (when running on the laptop)
 """
 import argparse
-import importlib
 import os
-import pkgutil
 import socket
 import sys
 import traceback
-from pathlib import Path
 
 import pygame
 
-from playground import scenes as scenes_pkg
 from playground.control import Controller, start_server
+from playground.loader import list_scenes, load_module, preset_path
 from playground.scene import Values
 from playground.touch import EvdevTouch
 
 W, H = 480, 640                   # panel resolution (portrait)
 STEP = 1 / 60                     # fixed physics/animation time step
 MAX_STEPS = 4                     # never fall further behind than this per frame
-ROOT = Path(__file__).parent
-
-
-def list_scenes():
-    out = {}
-    for m in pkgutil.iter_modules(scenes_pkg.__path__):
-        if m.name.startswith("_"):
-            continue
-        try:
-            mod = importlib.import_module(f"playground.scenes.{m.name}")
-            out[m.name] = getattr(mod.Scene, "TITLE", "") or m.name
-        except Exception:
-            out[m.name] = f"{m.name} (failed to load)"
-    return out
 
 
 def open_display(window, force_fb):
@@ -78,8 +61,7 @@ def local_ip():
 
 def build_scene(ctrl, name, w, h, switching):
     """Import (or re-import, picking up code edits) and construct a scene."""
-    mod = importlib.import_module(f"playground.scenes.{name}")
-    mod = importlib.reload(mod)
+    mod = load_module(name)
     if switching:
         ctrl.load_scene(name, mod.Scene)
     else:                                   # keep current values, refresh schema
@@ -116,7 +98,7 @@ def main():
     font = pygame.font.Font(None, 22)
     clock = pygame.time.Clock()
 
-    ctrl = Controller(available, ROOT / "presets")
+    ctrl = Controller(available, preset_path)
     scene = build_scene(ctrl, args.scene, w, h, switching=True)
 
     if not args.no_panel:

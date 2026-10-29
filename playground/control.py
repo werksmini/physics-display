@@ -10,10 +10,10 @@ PANEL_HTML = HERE / "panel.html"
 
 
 class Controller:
-    def __init__(self, scenes, presets_dir):
+    def __init__(self, scenes, preset_path):
         self.lock = threading.Lock()
         self.scenes = scenes                  # {name: title}
-        self.presets_dir = Path(presets_dir)
+        self.preset_path = preset_path        # function: scene name -> Path
         self.scene_name = None
         self.schema = []                      # list of Param
         self.values = {}
@@ -25,7 +25,7 @@ class Controller:
     # --- called from the render loop -------------------------------------
     def load_scene(self, name, scene_cls):
         values = {p.name: p.default for p in scene_cls.PARAMS}
-        preset = self.presets_dir / f"{name}.json"
+        preset = self.preset_path(name)
         if preset.exists():
             try:
                 saved = json.loads(preset.read_text())
@@ -90,8 +90,7 @@ class Controller:
 
     def save_preset(self):
         with self.lock:
-            self.presets_dir.mkdir(parents=True, exist_ok=True)
-            path = self.presets_dir / f"{self.scene_name}.json"
+            path = self.preset_path(self.scene_name)
             path.write_text(json.dumps(self.values, indent=2) + "\n")
             return str(path)
 

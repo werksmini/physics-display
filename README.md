@@ -6,10 +6,10 @@ Notes, setup guides and research live in the Notion workspace ("Physics Display 
 
 ## Layout
 
-- `run.py` – runs a playground scene and serves its control panel
-- `playground/` – scene runner, touch + framebuffer drivers, web control panel
-- `playground/scenes/` – one file per scene (`grass.py`, `balls.py`)
-- `presets/` – saved slider settings per scene ("Save as default" in the panel)
+- `run.py` – runs a scene and serves its control panel
+- `scenes/` – **the scene collection**, one folder per scene; see the [gallery](scenes/README.md)
+- `playground/` – the engine: scene loader, touch + framebuffer drivers, web control panel
+- `tools/make_previews.py` – regenerates each scene's `preview.png` and the gallery
 - `demos/` – earlier standalone experiments
 - `config/` – known-good `config.txt` snippets, with OS version noted in each file
 
@@ -27,8 +27,10 @@ the scene's code, so after editing a scene file (or `git pull`) you don't need t
 
 ### Writing a scene
 
-Make `playground/scenes/<name>.py` with a `Scene` class: declare `PARAMS`, then fill in
-`setup`, `update(dt)`, `draw(surf)` and `touch(kind, x, y)`. See `playground/scene.py`.
+Make a folder `scenes/<name>/` with a `scene.py` containing a `Scene` class: declare `PARAMS`,
+then fill in `setup`, `update(dt)`, `draw(surf)` and `touch(kind, x, y)` (see `playground/scene.py`).
+Add a `README.md`, then run `python tools/make_previews.py <name>`. "Save as default" in the panel
+writes `scenes/<name>/preset.json`; commit it to keep it.
 
 ## Quick start
 

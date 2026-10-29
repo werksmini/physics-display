@@ -12,28 +12,8 @@ How it works (see the "How real-time physics & animation work" deep dive):
 import numpy as np
 import pygame
 
+from playground.noise import ValueNoise2D, lerp_color as lerp
 from playground.scene import BaseScene, Param
-
-
-class ValueNoise2D:
-    """Smooth random values over 2D space (vectorised value noise)."""
-
-    def __init__(self, seed=0, size=256):
-        self.g = np.random.default_rng(seed).random((size, size)).astype(np.float32)
-        self.m = size - 1
-
-    def __call__(self, u, v):
-        iu, iv = np.floor(u).astype(np.int64), np.floor(v).astype(np.int64)
-        fu, fv = u - iu, v - iv
-        su, sv = fu * fu * (3 - 2 * fu), fv * fv * (3 - 2 * fv)    # smoothstep
-        iu0, iv0, iu1, iv1 = iu & self.m, iv & self.m, (iu + 1) & self.m, (iv + 1) & self.m
-        a, b = self.g[iv0, iu0], self.g[iv0, iu1]
-        c, d = self.g[iv1, iu0], self.g[iv1, iu1]
-        return a + (b - a) * su + (c - a) * sv + (a - b - c + d) * su * sv
-
-
-def lerp(c1, c2, t):
-    return tuple(int(a + (b - a) * t) for a, b in zip(c1, c2))
 
 
 SKY_TOP, SKY_HORIZON = (26, 34, 70), (226, 152, 104)
@@ -44,6 +24,7 @@ WIND_FORCE = 6.0          # how hard wind of 1.0 pushes a blade
 
 class Scene(BaseScene):
     TITLE = "Grass in the wind"
+    PREVIEW_TOUCH = (0.92, 0.5)            # finger held here for the preview image
     PARAMS = [
         Param("breeze", 0.4, -3, 3, 0.05, "Breeze",
               help="Steady wind when nobody is touching. Negative blows left."),

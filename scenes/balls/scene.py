@@ -1,5 +1,7 @@
-"""Bouncing balls (pymunk rigid bodies). Tap to blast nearby balls outward and
-spawn a new one under your finger."""
+"""Rigid-body balls in a box; tap to blast them apart.
+
+Uses pymunk (Chipmunk2D). A tap pushes nearby balls outward and spawns a new
+one under your finger."""
 import random
 
 import pygame
@@ -13,6 +15,8 @@ COLORS = [(255, 107, 107), (255, 209, 102), (6, 214, 160),
 
 class Scene(BaseScene):
     TITLE = "Bouncing balls"
+    PREVIEW_TOUCH = (0.5, 0.97)            # blast from the floor for the preview image
+    PREVIEW_AFTER = 25                     # ...and capture mid-flight
     PARAMS = [
         Param("gravity", 900, -1500, 2000, 10, "Gravity", help="Negative falls upward."),
         Param("elasticity", 0.85, 0, 1.0, 0.01, "Bounciness"),
