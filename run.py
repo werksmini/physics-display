@@ -4,6 +4,7 @@
     python run.py grass --window     # laptop: 480x640 window, mouse = touch
     python run.py --list             # show available scenes
     python run.py                    # the last scene shown (how the boot service starts it)
+    python run.py pool --gpu         # draw through the GPU (needed for shader scenes)
 
 On the Pi, hold a finger still in any corner of the screen for two seconds to
 switch to the next scene.
@@ -38,26 +39,48 @@ HOLD_SECONDS = 2.0                # hold still in a corner this long to switch s
 CORNER = 80                       # corner zone size, in panel pixels
 
 
-def open_display(window, force_fb):
-    """Return (screen_surface, framebuffer_or_None)."""
+def open_gpu():
+    """Open the panel through the GPU (OpenGL ES 2.0, vsync). Returns (size, GL)."""
+    from playground import gl as glmod
+    os.environ.setdefault("SDL_VIDEODRIVER", "kmsdrm")
+    pygame.display.init()
+    glmod.request_es2_context()
+    flags = pygame.OPENGL | pygame.DOUBLEBUF
+    size = (W, H)
+    if os.environ["SDL_VIDEODRIVER"] == "kmsdrm":
+        flags |= pygame.FULLSCREEN
+        size = (0, 0)
+    try:
+        surf = pygame.display.set_mode(size, flags, vsync=1)
+    except (pygame.error, TypeError):
+        surf = pygame.display.set_mode(size, flags)
+    pygame.mouse.set_visible(False)
+    w, h = surf.get_size()
+    return (w, h), glmod.GL(w, h)
+
+
+def open_display(window, mode):
+    """mode: 'gpu', 'fb' or 'auto'. Returns (screen_surface, framebuffer_or_None, gl_or_None)."""
     if window:
         screen = pygame.display.set_mode((W, H))
         pygame.display.set_caption("playground")
-        return screen, None
-    if not force_fb:
+        return screen, None, None
+    if mode in ("gpu", "auto"):
         try:
-            screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
-            pygame.mouse.set_visible(False)
-            return screen, None
-        except pygame.error as err:
-            print(f"SDL display failed ({err}); drawing to /dev/fb0 instead")
+            size, gl = open_gpu()
+            info = gl.info()
+            print(f"GPU display: {info['renderer']} ({info['version']}), {size[0]}x{size[1]}")
+            return pygame.Surface(size), None, gl
+        except Exception as err:                 # no GPU path: fall back to the framebuffer
+            if mode == "gpu":
+                print(f"GPU display failed ({err}); drawing to /dev/fb0 instead")
+            pygame.display.quit()
     from playground.framebuffer import FrameBuffer
-    pygame.display.quit()
     os.environ["SDL_VIDEODRIVER"] = "dummy"
     pygame.display.init()
     pygame.display.set_mode((1, 1))
     fb = FrameBuffer()
-    return pygame.Surface(fb.size), fb
+    return pygame.Surface(fb.size), fb, None
 
 
 def local_ip():
@@ -140,29 +163,40 @@ class Banner:
     def show(self, text, now, secs=2.5):
         self.text, self.until = text, now + secs
 
-    def draw(self, surf, now):
+    def image(self, now):
+        """The banner as a small surface, or None when it isn't showing."""
         if now > self.until or not self.text:
-            return
-        img = self.font.render(self.text, True, (245, 245, 245))
-        box = img.get_rect(center=(surf.get_width() // 2, surf.get_height() // 2)).inflate(36, 22)
-        bg = pygame.Surface(box.size, pygame.SRCALPHA)
-        pygame.draw.rect(bg, (0, 0, 0, 170), bg.get_rect(), border_radius=12)
-        surf.blit(bg, box.topleft)
-        surf.blit(img, img.get_rect(center=box.center))
+            return None
+        txt = self.font.render(self.text, True, (245, 245, 245))
+        img = pygame.Surface(txt.get_rect().inflate(36, 22).size, pygame.SRCALPHA)
+        pygame.draw.rect(img, (0, 0, 0, 170), img.get_rect(), border_radius=12)
+        img.blit(txt, txt.get_rect(center=img.get_rect().center))
+        return img
+
+    def draw(self, surf, now):
+        img = self.image(now)
+        if img:
+            surf.blit(img, img.get_rect(center=(surf.get_width() // 2, surf.get_height() // 2)))
 
 
 class Stage:
     """Where scenes draw. Portrait scenes draw straight to the screen. Landscape
     scenes (Scene.LANDSCAPE = True) draw on a 640x480 canvas that is rotated onto
     the portrait panel, with touches rotated to match; in a laptop window they
-    simply get a landscape window."""
+    simply get a landscape window.
 
-    def __init__(self, screen, fb, window):
-        self.screen, self.fb, self.window = screen, fb, window
+    In GPU mode (self.gl set), ordinary scenes still draw on a canvas Surface,
+    which is uploaded as a texture and presented with vsync (rotated on the GPU
+    for landscape). GPU scenes (Scene.GPU = True) draw with shaders directly."""
+
+    def __init__(self, screen, fb, window, gl=None):
+        self.screen, self.fb, self.window, self.gl = screen, fb, window, gl
         self.landscape = False
         self.canvas = screen
+        self.gpu_scene = False
 
-    def configure(self, landscape):
+    def configure(self, landscape, gpu_scene=False):
+        self.gpu_scene = gpu_scene
         if landscape == self.landscape and self.canvas is not None:
             return
         self.landscape = landscape
@@ -186,12 +220,24 @@ class Stage:
         return cw - 1 - y, x                  # canvas rotated counter-clockwise (default)
 
     def present(self, flip):
+        if self.gl:                               # upload the canvas, draw it, swap with vsync
+            tex = self.gl.surface_texture(self.canvas, "canvas")
+            self.gl.screen()
+            self.gl.blit(tex, rot=(2 if flip else 1) if self.landscape else 0)
+            pygame.display.flip()
+            return
         if self.landscape and not self.window:
             self.screen.blit(pygame.transform.rotate(self.canvas, -90 if flip else 90), (0, 0))
         if self.fb:
             self.fb.show(self.screen)
         else:
             pygame.display.flip()
+
+    def present_gl(self, overlays):
+        """For GPU scenes: draw small overlay surfaces [(surf, (x, y))] then swap."""
+        for i, (img, pos) in enumerate(overlays):
+            self.gl.blit_at(self.gl.surface_texture(img, f"overlay{i}"), *pos)
+        pygame.display.flip()
 
 
 def build_scene(ctrl, name, stage, switching):
@@ -203,8 +249,11 @@ def build_scene(ctrl, name, stage, switching):
         ctrl.schema = list(mod.Scene.PARAMS)
         for p in ctrl.schema:
             ctrl.values.setdefault(p.name, p.default)
-    stage.configure(bool(getattr(mod.Scene, "LANDSCAPE", False)))
-    return mod.Scene(*stage.size, Values(ctrl))
+    gpu_scene = bool(getattr(mod.Scene, "GPU", False))
+    if gpu_scene and stage.gl is None:
+        raise RuntimeError(f"'{name}' draws with the GPU: run with --gpu on the Pi")
+    stage.configure(bool(getattr(mod.Scene, "LANDSCAPE", False)), gpu_scene)
+    return mod.Scene(*stage.size, Values(ctrl), gl=stage.gl)
 
 
 def main():
@@ -213,7 +262,9 @@ def main():
     ap.add_argument("scene", nargs="?", default=None,
                     help="scene to run (default: the last one shown, else grass)")
     ap.add_argument("--window", action="store_true", help="run in a window (laptop)")
-    ap.add_argument("--fb", action="store_true", help="draw straight to /dev/fb0")
+    ap.add_argument("--fb", action="store_true", help="draw straight to /dev/fb0 (no GPU)")
+    ap.add_argument("--gpu", action="store_true",
+                    help="draw through the GPU with vsync (default on the Pi, falls back to --fb)")
     ap.add_argument("--port", type=int, default=8000, help="control panel port")
     ap.add_argument("--no-panel", action="store_true", help="don't start the web panel")
     ap.add_argument("--list", action="store_true", help="list scenes and exit")
@@ -247,13 +298,19 @@ def main():
             print(f"Control panel not started: {err}")
 
     pygame.init()
-    screen, fb = open_display(window, args.fb)
+    mode = "fb" if args.fb else "gpu" if args.gpu else "auto"
+    screen, fb, gl = open_display(window, mode)
     w, h = screen.get_size()
     touch = None if window else EvdevTouch.open(w, h)
     font = pygame.font.Font(None, 22)
     clock = pygame.time.Clock()
-    stage = Stage(screen, fb, window)
-    scene = build_scene(ctrl, args.scene, stage, switching=True)
+    stage = Stage(screen, fb, window, gl)
+    try:
+        scene = build_scene(ctrl, args.scene, stage, switching=True)
+    except Exception as err:                     # e.g. last scene needs the GPU but we're on --fb
+        print(f"Couldn't start '{args.scene}': {err}\nStarting 'grass' instead.")
+        args.scene = "grass"
+        scene = build_scene(ctrl, args.scene, stage, switching=True)
     state.save(scene=args.scene)
     corner = CornerHold(w, h)
     banner = Banner()
@@ -316,13 +373,23 @@ def main():
             while acc >= STEP:
                 scene.update(STEP)
                 acc -= STEP
-            canvas = stage.canvas
-            scene.draw(canvas)
-            if ctrl.show_fps:
-                canvas.blit(font.render(f"{clock.get_fps():3.0f} fps", True,
-                                        (230, 230, 230), (0, 0, 0)), (4, 4))
-            banner.draw(canvas, now)
-            stage.present(ctrl.flip_landscape)
+            fps_img = font.render(f"{clock.get_fps():3.0f} fps", True, (230, 230, 230), (0, 0, 0)) \
+                if ctrl.show_fps else None
+            if stage.gpu_scene:
+                stage.gl.screen()
+                scene.draw_gl(stage.gl)
+                overlays = [(fps_img, (4, 4))] if fps_img else []
+                b = banner.image(now)
+                if b:
+                    overlays.append((b, ((w - b.get_width()) // 2, (h - b.get_height()) // 2)))
+                stage.present_gl(overlays)
+            else:
+                canvas = stage.canvas
+                scene.draw(canvas)
+                if fps_img:
+                    canvas.blit(fps_img, (4, 4))
+                banner.draw(canvas, now)
+                stage.present(ctrl.flip_landscape)
     except KeyboardInterrupt:
         pass
     finally:

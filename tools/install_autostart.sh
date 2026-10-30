@@ -44,7 +44,8 @@ Environment=PYTHONUNBUFFERED=1
 # hide the console's blinking cursor so it doesn't flicker over the scene (runs as root)
 ExecStartPre=+/bin/sh -c 'echo 0 > /sys/class/graphics/fbcon/cursor_blink || true'
 # no scene name: start the last scene that was showing
-ExecStart=$PY $REPO/run.py --fb
+# --gpu draws through the GPU with vsync, and falls back to the framebuffer if that fails
+ExecStart=$PY $REPO/run.py --gpu
 # restart after a crash, but not after a clean stop (Stop button, or a manual run taking over)
 Restart=on-failure
 RestartSec=3

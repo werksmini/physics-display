@@ -58,9 +58,10 @@ class BaseScene:
     TITLE = ""
     PARAMS: list = []
     LANDSCAPE = False        # True: drawn 640x480 and rotated onto the portrait panel
+    GPU = False              # True: draws with shaders in draw_gl(gl) instead of draw(surf)
 
-    def __init__(self, w, h, params):
-        self.w, self.h, self.p = w, h, params
+    def __init__(self, w, h, params, gl=None):
+        self.w, self.h, self.p, self.gl = w, h, params, gl
         self.setup()
 
     def setup(self):
@@ -70,6 +71,10 @@ class BaseScene:
         pass
 
     def draw(self, surf):
+        pass
+
+    def draw_gl(self, gl):
+        """GPU scenes: draw to the screen with gl (see playground/gl.py)."""
         pass
 
     def touch(self, kind, x, y):

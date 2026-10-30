@@ -11,7 +11,7 @@ import os
 import sys
 from pathlib import Path
 
-os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+os.environ.setdefault("SDL_VIDEODRIVER", "offscreen")      # offscreen also gives GPU scenes a GL context
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pygame  # noqa: E402
@@ -28,12 +28,27 @@ def first_line(doc):
     return (doc or "").strip().splitlines()[0].rstrip(".") if doc else ""
 
 
+GL = None
+
+
+def gl_context():
+    """A hidden OpenGL ES 2.0 context for GPU scenes (software-rendered if needed)."""
+    global GL
+    if GL is None:
+        from playground import gl as glmod
+        glmod.request_es2_context()
+        pygame.display.set_mode((W, H), pygame.OPENGL)
+        GL = glmod.GL(W, H)
+    return GL
+
+
 def render(name):
     mod = load_module(name)
     ctrl = Controller({name: name}, preset_path)
     ctrl.load_scene(name, mod.Scene)
     w, h = (H, W) if getattr(mod.Scene, "LANDSCAPE", False) else (W, H)
-    scene = mod.Scene(w, h, Values(ctrl))
+    gpu = getattr(mod.Scene, "GPU", False)
+    scene = mod.Scene(w, h, Values(ctrl), gl=gl_context() if gpu else None)
     if hasattr(scene, "preview"):            # a scene can script its own preview
         scene.preview(STEP)
         touch = None
@@ -46,8 +61,13 @@ def render(name):
         scene.touch("down", touch[0] * w, touch[1] * h)
     for _ in range(int(getattr(mod.Scene, "PREVIEW_AFTER", 150))):
         scene.update(STEP)
-    surf = pygame.Surface((w, h))
-    scene.draw(surf)
+    if gpu:
+        GL.screen()
+        scene.draw_gl(GL)
+        surf = GL.read_pixels()
+    else:
+        surf = pygame.Surface((w, h))
+        scene.draw(surf)
     out = SCENES_DIR / name / "preview.png"
     pygame.image.save(pygame.transform.smoothscale(surf, (w // 2, h // 2)), str(out))
     return mod
@@ -68,7 +88,6 @@ def gallery(mods):
 
 def main():
     pygame.init()
-    pygame.display.set_mode((1, 1))
     names = sys.argv[1:] or list(list_scenes())
     for n in names:
         render(n)

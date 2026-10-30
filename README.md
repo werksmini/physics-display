@@ -33,6 +33,20 @@ then fill in `setup`, `update(dt)`, `draw(surf)` and `touch(kind, x, y)` (see `p
 Add a `README.md`, then run `python tools/make_previews.py <name>`. "Save as default" in the panel
 writes `scenes/<name>/preset.json`; commit it to keep it.
 
+## GPU rendering
+
+The Pi Zero 2 W's graphics chip (VideoCore IV, OpenGL ES 2.0) is used through a tiny ctypes layer,
+`playground/gl.py`, so there's nothing extra to install. `python run.py --gpu` (the default on the
+Pi) opens the panel through the GPU with vsync:
+
+- ordinary scenes draw as before; their frame is uploaded and shown without tearing (landscape is
+  rotated on the GPU)
+- **GPU scenes** (`GPU = True`, e.g. `pool`) draw with shaders in `draw_gl(gl)`
+- if the GPU can't be opened it falls back to `--fb`
+
+GPU scenes don't run in the laptop window (Windows has no OpenGL ES library); `tools/make_previews.py`
+renders them in software. Shaders are GLSL ES 1.00; see the notes at the top of `playground/gl.py`.
+
 ## Run at boot (no computer needed)
 
 ```bash
