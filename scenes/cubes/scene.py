@@ -229,6 +229,9 @@ class Scene(BaseScene):
         self.last_tap = (-9.0, 0.0, 0.0)
         self.held = None                        # kept for drawing (glow)
         self.font = pygame.font.Font(None, 24)
+        self.target = TARGET.copy()             # what the camera looks at
+        self.mode = "cube"                      # "cube": gestures steer the cube; "view": the camera
+        self.mode_t = -9.0                      # when the mode last changed (for the label)
         self._camera()
         self._present()
 
@@ -268,8 +271,8 @@ class Scene(BaseScene):
     # ------------------------------------------------------------- camera
     def _camera(self):
         cp = math.cos(self.pitch)
-        self.eye = TARGET + self.dist * np.array([cp * math.sin(self.yaw), math.sin(self.pitch), cp * math.cos(self.yaw)])
-        self.view = look_at(self.eye, TARGET)
+        self.eye = self.target + self.dist * np.array([cp * math.sin(self.yaw), math.sin(self.pitch), cp * math.cos(self.yaw)])
+        self.view = look_at(self.eye, self.target)
         self.proj = perspective(FOV, self.w / self.h, 0.3, 80.0)
         self.viewproj = self.proj @ self.view
         self.inv_vp = np.linalg.inv(self.viewproj)
@@ -312,7 +315,8 @@ class Scene(BaseScene):
         if ids != prev_ids:
             if not prev_ids and ids:                         # a touch starts
                 x, y = next(iter(fingers.values()))
-                self.gesture = {"t0": self.t, "start": (x, y), "moved": 0.0, "max_n": len(ids)}
+                self.gesture = {"t0": self.t, "start": (x, y), "moved": 0.0, "max_n": len(ids),
+                                "button": self._on_button(x, y)}
             elif prev_ids and not ids:                       # all fingers lifted
                 self._end_gesture()
             if self.gesture:
@@ -328,7 +332,10 @@ class Scene(BaseScene):
         dc = cur.mean(0) - old.mean(0)
         if self.gesture:
             self.gesture["moved"] += math.hypot(*dc)
-        c = self.active
+            if self.gesture["button"]:                       # touches on the button don't steer
+                self.prev = dict(fingers)
+                return
+        c = self.active if self.mode == "cube" else None
         if c is not None:
             self.touched = True
             if n == 2:
@@ -352,14 +359,25 @@ class Scene(BaseScene):
                 if ang > 0:
                     c.R = axis_angle(self.up * dc[0] + self.right * dc[1], ang) @ c.R
             c.R = reorthonormalize(c.R)
-        else:                                                # no active cube: move the camera
-            if n == 1:
+        else:                                                # view mode (or no cube): the camera
+            if n == 1:                                       # orbit
                 self.yaw -= dc[0] * 0.008
                 self.pitch = min(1.35, max(0.08, self.pitch + dc[1] * 0.006))
-            else:
+            else:                                            # pinch: zoom; slide: pan; twist: turn
                 d0, d1 = np.linalg.norm(old[1] - old[0]), np.linalg.norm(cur[1] - cur[0])
                 if d0 > 10:
-                    self.dist = min(18, max(4, self.dist * d0 / d1))
+                    self.dist = min(18, max(3, self.dist * d0 / d1))
+                a0 = math.atan2(old[1, 1] - old[0, 1], old[1, 0] - old[0, 0])
+                a1 = math.atan2(cur[1, 1] - cur[0, 1], cur[1, 0] - cur[0, 0])
+                self.yaw -= (a1 - a0 + math.pi) % (2 * math.pi) - math.pi
+                scale = 2 * self.dist * math.tan(math.radians(FOV) / 2) / self.h
+                flat_r = np.array([self.right[0], 0, self.right[2]])
+                flat_f = np.array([self.fwd[0], 0, self.fwd[2]])
+                flat_r /= np.linalg.norm(flat_r) + 1e-9
+                flat_f /= np.linalg.norm(flat_f) + 1e-9
+                self.target += (-flat_r * dc[0] + flat_f * dc[1]) * scale
+                for k in (0, 2):
+                    self.target[k] = max(-6.0, min(6.0, self.target[k]))
             self._camera()
         self.prev = dict(fingers)
 
@@ -368,6 +386,10 @@ class Scene(BaseScene):
         if g is None:
             return
         quick = self.t - g["t0"] < 0.3 and g["moved"] < 14
+        if g["button"]:
+            if self.t - g["t0"] < 0.6 and g["moved"] < 30:   # tap the corner button: switch mode
+                self._set_mode("view" if self.mode == "cube" else "cube")
+            return
         if quick and g["max_n"] == 1:                        # a tap
             x, y = g["start"]
             t, lx, ly = self.last_tap
@@ -380,10 +402,61 @@ class Scene(BaseScene):
             if c is not None and c is not self.active and c.state in ("sleep", "free"):
                 self._drop()                                 # tap a cube on the floor: pick it up
                 self._present(c)
+                self._set_mode("cube")
             return
-        if self.active is not None and g["max_n"] >= 2:      # a quick flick throws it
+        if self.active is not None and self.mode == "cube" and g["max_n"] >= 2:      # a quick flick throws it
             if np.linalg.norm(self.hold_v) > 3.0:
                 self._drop(self.hold_v * self.p.throw, self.hold_w * self.p.throw)
+
+    # ------------------------------------------------------------- mode button
+    def _button(self):
+        return self.w - 34, 34, 24
+
+    def _on_button(self, x, y):
+        bx, by, r = self._button()
+        return math.hypot(x - bx, y - by) < r + 18      # a generous target for a fingertip
+
+    def _set_mode(self, mode):
+        if mode != self.mode:
+            self.mode, self.mode_t = mode, self.t
+
+    def _icon(self, gl, mode):
+        """A small round chip: a cube (manipulate) or orbit arrows around an eye (navigate)."""
+        key = "cubes_icon_" + mode
+        cache = self.__dict__.setdefault("_icons", {})
+        if key in cache:
+            return cache[key]
+        S = 4                                            # draw big, then shrink: smooth edges
+        r = self._button()[2]
+        D = 2 * r * S
+        big = pygame.Surface((D, D), pygame.SRCALPHA)
+        c = D // 2
+        pygame.draw.circle(big, (255, 255, 255, 190), (c, c), c)
+        ink = (52, 54, 62, 255)
+        lw = 2 * S
+        if mode == "cube":                               # isometric wireframe cube
+            k = 0.42 * c
+            top = (c, c - k); bot = (c, c + k)
+            ul = (c - 0.87 * k, c - 0.5 * k); ur = (c + 0.87 * k, c - 0.5 * k)
+            ll = (c - 0.87 * k, c + 0.5 * k); lr = (c + 0.87 * k, c + 0.5 * k)
+            pygame.draw.polygon(big, (214, 120, 70, 255), [(c, c), ur, top, ul])
+            pygame.draw.lines(big, ink, True, [top, ur, lr, bot, ll, ul], lw)
+            for q in (ul, ur, bot):
+                pygame.draw.line(big, ink, (c, c), q, lw)
+        else:                                            # eye inside an orbit ring with arrowheads
+            rect = pygame.Rect(0, 0, 1.3 * c, 0.62 * c)
+            rect.center = (c, c)
+            pygame.draw.ellipse(big, ink, rect, lw)
+            pygame.draw.circle(big, (70, 120, 200, 255), (c, c), int(0.17 * c))
+            for sgn in (-1, 1):
+                ax = c + sgn * 0.65 * c
+                ay = c + sgn * 0.02 * c
+                tip = (ax, ay + sgn * 0.22 * c)
+                pygame.draw.polygon(big, ink, [tip, (ax - 0.16 * c, ay - sgn * 0.02 * c),
+                                               (ax + 0.16 * c, ay - sgn * 0.02 * c)])
+        small = pygame.transform.smoothscale(big, (2 * r, 2 * r))
+        cache[key] = gl.surface_texture(small, key)
+        return cache[key]
 
     # ------------------------------------------------------------- physics
     def update(self, dt):
@@ -597,10 +670,26 @@ class Scene(BaseScene):
         gl.cull(False)
         gl.depth(False)
 
+        view = self.mode == "view" or self.active is None
+        bx, by, r = self._button()
+        gl.blit_at(self._icon(gl, "view" if view else "cube"), bx - r, by - r,
+                   alpha=0.75 if self.mode == "cube" and self.active is None else 1.0)
+        if self.t - self.mode_t < 1.4:                       # name the new mode briefly
+            key = "cubes_label_" + self.mode
+            cache = self.__dict__.setdefault("_icons", {})
+            if key not in cache:
+                im = self.font.render("move cube" if self.mode == "cube" else "move view", True, (40, 40, 46))
+                lab = pygame.Surface((im.get_width() + 16, 26), pygame.SRCALPHA)
+                pygame.draw.rect(lab, (255, 255, 255, 180), lab.get_rect(), border_radius=8)
+                lab.blit(im, im.get_rect(center=(lab.get_width() // 2, 13)))
+                cache[key] = gl.surface_texture(lab, key)
+            tex = cache[key]
+            gl.blit_at(tex, bx - r - 8 - tex.w, by - 13, alpha=min(1.0, (1.4 - (self.t - self.mode_t)) * 3))
+
         if self.t < 9 and not self.prev:                     # a hint for the first few seconds
             if not hasattr(self, "_hint"):
-                lines = ["drag anywhere: spin   2 fingers: move, twist, pinch",
-                         "double-tap: set it down   tap a cube: pick it up"]
+                lines = ["drag: spin   2 fingers: move, twist, pinch",
+                         "double-tap: drop   corner button: move the view"]
                 imgs = [self.font.render(s, True, (40, 40, 46)) for s in lines]
                 hint = pygame.Surface((max(i.get_width() for i in imgs) + 20, 52), pygame.SRCALPHA)
                 pygame.draw.rect(hint, (255, 255, 255, 170), hint.get_rect(), border_radius=10)

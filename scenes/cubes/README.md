@@ -21,7 +21,9 @@ The screen is smaller than two fingertips, so you never touch the cube itself. G
 | **Double-tap** | Set it down: it falls with gravity, tumbles and settles |
 | **Quick 2-finger flick** | Throw it |
 | **Tap a cube on the floor** | Pick it back up (anything resting on it falls) |
-| **Drag / pinch with no active cube** | Orbit / zoom the camera (while the last cube lands) |
+| **Tap the corner button** (top right) | Switch between moving the **cube** (cube icon) and moving the **view** (eye icon) |
+
+In **view** mode the cube stays put: 1 finger orbits the camera, 2 fingers slide to pan, pinch to zoom and twist to turn. While no cube is active (the last one is landing) gestures always move the view. Tapping a cube on the floor switches back to cube mode.
 
 When a dropped cube settles, the next one is presented. The active cube glows slightly.
 
