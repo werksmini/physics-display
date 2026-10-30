@@ -8,16 +8,22 @@ A real 3D scene: a grey studio with a grid floor fading into haze, and cubes you
 python run.py cubes --gpu      # Pi
 ```
 
-## Gestures
+## Controls
 
-| Fingers | On a cube | On empty space |
-|---|---|---|
-| **1** | Pick it up and tumble it (trackball: drag right, it spins right) | Orbit the camera around the scene |
-| **2** | Carry it. Move together to move it; **twist** to roll it; **pinch** to push it away, **spread** to pull it closer | Pinch to zoom |
-| **3** | Tumble it while it stays where it is | |
-| **Let go** | It falls, keeping the spin and throw you gave it | |
+The screen is smaller than two fingertips, so you never touch the cube itself. Gestures work **anywhere**, like a laptop trackpad, and steer the active cube:
 
-Fingers can be added or lifted mid-gesture (e.g. carry with 2, add a third to tumble) without dropping the cube; it's released when the last finger lifts. A held cube glows slightly.
+| Gesture | What it does |
+|---|---|
+| **1 finger drag** | Tumble the cube (trackball: drag right, it spins right) |
+| **2 fingers** | Move it around; **twist** to roll it; **pinch** to push it away, **spread** to pull it closer |
+| **3 fingers** | Tumble it too |
+| **Lift your fingers** | It stays where you left it, so you can adjust in several moves |
+| **Double-tap** | Set it down: it falls with gravity, tumbles and settles |
+| **Quick 2-finger flick** | Throw it |
+| **Tap a cube on the floor** | Pick it back up (anything resting on it falls) |
+| **Drag / pinch with no active cube** | Orbit / zoom the camera (while the last cube lands) |
+
+When a dropped cube settles, the next one is presented. The active cube glows slightly.
 
 ## How it works
 
@@ -30,10 +36,10 @@ Fingers can be added or lifted mid-gesture (e.g. carry with 2, add a third to tu
 **Picking:** a ray from the camera through your finger is tested against each cube (in the cube's own frame it's a simple box test). If you're near a cube on screen, that counts too.
 
 **Physics:** each cube is a rigid body (position, velocity, rotation, spin).
-- Contacts come from the cube's 8 corners hitting the floor, and from corner and edge points poking into other cubes. Edge points matter: two cubes meeting edge-to-edge have no corner inside the other.
+- Contacts come from the cube's 8 corners hitting the floor, and from corners and edge midpoints poking into other cubes. Edge points matter: two cubes meeting edge-to-edge have no corner inside the other.
 - Each contact gets an impulse that stops it sinking in, with a little bounce and friction. Because the push lands off-centre, it changes the spin too, which is what makes cubes tumble and settle onto a face.
 - Cubes that stop moving go to sleep (cost nothing) until a hard knock wakes them.
-- Four small steps per frame for stability. The small-vector maths is written in plain Python floats, since numpy is slow for 3-number vectors: about 1 ms per frame with several cubes tumbling.
+- Kept light for the Pi: two small steps and two contact rounds per frame, a cheap distance check (once per step) before any detailed test, one merged contact per touching pair, and the small-vector maths in plain Python floats (numpy is slow for 3-number vectors). A busy pile of 7 tumbling cubes takes about 1 ms per frame on a desktop CPU.
 
 **Multi-touch:** the panel's Goodix controller reports up to 5 fingers (Linux multi-touch slots); `playground/touch.py` tracks them and the runner passes `{finger id: (x, y)}` to any scene with a `fingers()` method.
 
@@ -44,8 +50,8 @@ Fingers can be added or lifted mid-gesture (e.g. carry with 2, add a third to tu
 | Gravity | 0.2 for moon-like floaty tumbling |
 | Bounciness | 0.8 for rubbery cubes |
 | Friction | 0 for ice: cubes slide and spin on the floor |
-| Throw strength | 2 to hurl cubes; 0 to just drop them |
-| Spin sensitivity | Lower for precise CAD-style positioning |
+| Throw strength | 2 to really hurl cubes with a flick |
+| Spin / Move sensitivity | Lower for precise CAD-style positioning |
 
 ## Ideas
 

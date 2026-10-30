@@ -34,7 +34,8 @@ from playground.touch import EvdevTouch
 
 W, H = 480, 640                   # panel resolution (portrait)
 STEP = 1 / 60                     # fixed physics/animation time step
-MAX_STEPS = 4                     # never fall further behind than this per frame
+MAX_STEPS = 2                     # when a frame is slow, catch up at most this much
+                                  # (more would make the next frame slower still)
 HOLD_SECONDS = 2.0                # hold still in a corner this long to switch scene
 CORNER = 80                       # corner zone size, in panel pixels
 

@@ -1,23 +1,28 @@
-"""Cubes: pick up a cube with your fingers, spin it like in a CAD program, let it fall.
+"""Cubes: turn a cube in space with your fingers, set it down, watch it fall.
 
 A real 3D scene on the GPU: a grey studio with a grid floor fading into haze,
 lit cubes with softly bevelled edges, and shadows on the floor.
 
-Gestures (on a cube):
-- 1 finger: pick it up and tumble it (trackball: drag right spins it right).
-- 2 fingers: carry it. Move them together to move it; twist to roll it;
-  pinch to push it away, spread to pull it closer.
-- 3 fingers: tumble it while it stays where it is.
-- Let go: it falls with gravity, keeping the spin and throw you gave it,
-  bounces, tumbles and settles. Then the next cube is presented.
-On empty space: 1 finger orbits the camera, 2 fingers pinch to zoom.
+The screen is too small to touch the cube itself, so the controls are
+indirect, like a laptop trackpad: gestures anywhere steer the active cube.
+- 1 finger drag: tumble it (trackball: drag right, it spins right).
+- 2 fingers: move it around; twist to roll it; pinch to push it away,
+  spread to pull it closer.
+- 3 fingers: tumble it too.
+- Lift your fingers: it stays where you left it, so you can adjust in steps.
+- Double-tap: set it down (it falls with gravity). A quick two-finger flick
+  throws it instead.
+- Tap a cube on the floor: pick it back up.
+With no active cube (while the last one lands), dragging orbits the camera
+and pinching zooms.
 
 Physics: each cube is a rigid body (position, velocity, rotation, spin).
-Contacts are found by checking each cube's 8 corners against the floor and
-against other cubes; each contact gets an impulse (a push at that corner) that
-stops it sinking in, with a little bounce and friction. Because the push lands
-at a corner, it also changes the spin, which is what makes cubes tumble
-realistically. Cubes that stop moving go to sleep until something hits them.
+Contacts are found by checking each cube's corners against the floor, and
+corner and edge points against other cubes; each contact gets an impulse (a
+push at that point) that stops it sinking in, with a little bounce and
+friction. Because the push lands off-centre, it also changes the spin, which
+is what makes cubes tumble and settle onto a face. Cubes that stop moving
+go to sleep until something knocks them.
 """
 import colorsys
 import math
@@ -32,18 +37,18 @@ CORNERS = np.array([[x, y, z] for x in (-.5, .5) for y in (-.5, .5) for z in (-.
 
 
 def _edge_points():
-    """Points along all 12 edges (quarter, half, three-quarter): with the corners, these
+    """The midpoints of all 12 edges: with the corners, these
     catch cubes meeting edge-to-edge, where no corner pokes into the other cube."""
     pts = []
     for i in range(8):
         for j in range(i + 1, 8):
             if np.sum(CORNERS[i] != CORNERS[j]) == 1:
-                for t in (0.25, 0.5, 0.75):
+                for t in (0.5,):
                     pts.append(CORNERS[i] + (CORNERS[j] - CORNERS[i]) * t)
     return np.array(pts)
 
 
-SAMPLES = np.vstack([CORNERS, _edge_points()])     # 8 corners + 36 edge points
+SAMPLES = np.vstack([CORNERS, _edge_points()])     # 8 corners + 12 edge midpoints
 INV_I = 6.0                     # inverse inertia of a unit cube of mass 1 (I = m s^2 / 6)
 FOV = 45.0
 TARGET = np.array([0.0, 0.9, 0.0])
@@ -161,9 +166,9 @@ class Cube:
     def __init__(self, idx, pos, rot):
         self.pos, self.R = np.array(pos, float), np.array(rot, float)
         self.vel, self.w = np.zeros(3), np.zeros(3)
-        self.state = "presented"            # presented | held | free | sleep
+        self.state = "held"                 # held (active, kinematic) | free | sleep
         self.still = 0.0
-        self.age = 0.0
+        self.touching = False
         hue_shift = (idx * 0.09) % 1.0
         cols = BASE_COLORS[idx % 6:] + BASE_COLORS[:idx % 6]
         self.colors = []
@@ -178,6 +183,14 @@ class Cube:
         return self.pos + SAMPLES @ self.R.T
 
 
+def reorthonormalize(R):
+    """Cheap clean-up of rounding drift (Gram-Schmidt on the columns)."""
+    x = R[:, 0] / np.linalg.norm(R[:, 0])
+    y = R[:, 1] - x * (x @ R[:, 1])
+    y /= np.linalg.norm(y)
+    return np.column_stack([x, y, np.cross(x, y)])
+
+
 class Scene(BaseScene):
     TITLE = "Cubes (GPU, 3D)"
     GPU = True
@@ -186,8 +199,9 @@ class Scene(BaseScene):
         Param("bounce", 0.3, 0, 0.9, 0.01, "Bounciness"),
         Param("friction", 0.6, 0, 1.5, 0.05, "Friction"),
         Param("spin_speed", 1.0, 0.2, 3, 0.05, "Spin sensitivity"),
-        Param("throw", 1.0, 0, 2, 0.05, "Throw strength", help="How much of your hand's motion the cube keeps."),
-        Param("max_cubes", 10, 1, MAX_CUBES, 1, "Cubes kept"),
+        Param("move_speed", 1.0, 0.2, 3, 0.05, "Move sensitivity"),
+        Param("throw", 1.0, 0, 2, 0.05, "Throw strength", help="How much of a flick the cube keeps."),
+        Param("max_cubes", 8, 1, MAX_CUBES, 1, "Cubes kept"),
     ]
 
     # ------------------------------------------------------------------ setup
@@ -205,24 +219,51 @@ class Scene(BaseScene):
         self.t = 0.0
         self.yaw, self.pitch, self.dist = 0.42, 0.40, 8.5
         self.prev = {}                          # finger id -> (x, y) last frame
-        self.held = None
-        self.cam_drag = False
+        self.active = None                      # the cube your gestures steer
+        self.hover = PRESENT_AT.copy()          # where the active cube floats
+        self.touched = False                    # has the active cube been moved yet?
         self.release_t = None
         self.hold_v, self.hold_w = np.zeros(3), np.zeros(3)
         self.last_pos, self.last_R = None, None
+        self.gesture = None                     # info about the current touch, for taps
+        self.last_tap = (-9.0, 0.0, 0.0)
+        self.held = None                        # kept for drawing (glow)
         self.font = pygame.font.Font(None, 24)
         self._camera()
         self._present()
 
-    def _present(self):
-        rot = axis_angle([0.3, 1, 0.2], 0.6)
-        c = Cube(self.count, PRESENT_AT + [0, 4.0, 0], rot)
-        self.count += 1
-        self.cubes.append(c)
-        while len(self.cubes) > int(self.p.max_cubes):
-            old = next((k for k in self.cubes if k.state == "sleep"), None) or self.cubes[0]
-            self.cubes.remove(old)
-        self.presented = c
+    def _present(self, cube=None):
+        if cube is None:
+            cube = Cube(self.count, PRESENT_AT + [0, 4.0, 0], axis_angle([0.3, 1, 0.2], 0.6))
+            self.count += 1
+            self.cubes.append(cube)
+            while len(self.cubes) > int(self.p.max_cubes):
+                old = next((k for k in self.cubes if k.state == "sleep"), None)
+                if old is None:
+                    break
+                self.cubes.remove(old)
+            self.hover = PRESENT_AT.copy()
+        else:                                   # a cube picked back up from the floor
+            for o in self.cubes:                # whatever rested on it starts to fall
+                if o is not cube and o.state == "sleep" and np.sum((o.pos - cube.pos) ** 2) < 3.0:
+                    o.state, o.still = "free", 0.0
+            self.hover = np.array([cube.pos[0], max(2.2, cube.pos[1] + 1.5), cube.pos[2]])
+        cube.state = "held"
+        cube.vel[:], cube.w[:] = 0, 0
+        self.active = self.held = cube
+        self.touched = False
+        self.hold_v[:], self.hold_w[:] = 0, 0
+        self.last_pos, self.last_R = cube.pos.copy(), cube.R.copy()
+
+    def _drop(self, vel=None, w=None):
+        c = self.active
+        if c is None:
+            return
+        c.state, c.still = "free", 0.0
+        c.vel = np.zeros(3) if vel is None else np.clip(vel, -14, 14)
+        c.w = np.zeros(3) if w is None else np.clip(w, -25, 25)
+        self.active = self.held = None
+        self.release_t = self.t
 
     # ------------------------------------------------------------- camera
     def _camera(self):
@@ -246,110 +287,115 @@ class Scene(BaseScene):
         c = self.viewproj @ [*p, 1.0]
         return ((c[0] / c[3] + 1) / 2 * self.w, (1 - c[1] / c[3]) / 2 * self.h)
 
-    def _pick(self, pts):
-        """The cube under any of the fingers (ray hit, or close on screen)."""
+    def _pick(self, x, y):
+        """The cube under (x, y): ray hit, or close on screen."""
+        o, d = self._ray(x, y)
         best, best_t = None, 1e9
-        for (x, y) in pts:
-            o, d = self._ray(x, y)
+        for c in self.cubes:
+            lo, ld = (o - c.pos) @ c.R, d @ c.R
+            with np.errstate(divide="ignore", invalid="ignore"):
+                t1, t2 = (-0.5 - lo) / ld, (0.5 - lo) / ld
+            tmin = np.nanmax(np.minimum(t1, t2))
+            tmax = np.nanmin(np.maximum(t1, t2))
+            if tmax >= max(tmin, 0) and tmin < best_t:
+                best, best_t = c, tmin
+        if best is None:
             for c in self.cubes:
-                lo, ld = (o - c.pos) @ c.R, d @ c.R
-                with np.errstate(divide="ignore", invalid="ignore"):
-                    t1, t2 = (-0.5 - lo) / ld, (0.5 - lo) / ld
-                tmin = np.nanmax(np.minimum(t1, t2))
-                tmax = np.nanmin(np.maximum(t1, t2))
-                if tmax >= max(tmin, 0) and tmin < best_t:
-                    best, best_t = c, tmin
-        if best is None:                                    # forgiving: near the cube on screen
-            for (x, y) in pts:
-                for c in self.cubes:
-                    sx, sy = self._project(c.pos)
-                    if math.hypot(sx - x, sy - y) < 48:
-                        return c
+                sx, sy = self._project(c.pos)
+                if math.hypot(sx - x, sy - y) < 40:
+                    return c
         return best
 
     # ------------------------------------------------------------- gestures
     def fingers(self, fingers):
-        ids = set(fingers)
-        prev_ids = set(self.prev)
+        ids, prev_ids = set(fingers), set(self.prev)
         if ids != prev_ids:
-            if not prev_ids and ids:                         # gesture starts
-                c = self._pick(list(fingers.values()))
-                if c is not None:
-                    self.held = c
-                    c.state = "held"
-                    c.vel[:], c.w[:] = 0, 0
-                    self.hold_v[:], self.hold_w[:] = 0, 0
-                    self.last_pos, self.last_R = c.pos.copy(), c.R.copy()
-                    if c is self.presented:
-                        self.presented = None
-                else:
-                    self.cam_drag = True
+            if not prev_ids and ids:                         # a touch starts
+                x, y = next(iter(fingers.values()))
+                self.gesture = {"t0": self.t, "start": (x, y), "moved": 0.0, "max_n": len(ids)}
             elif prev_ids and not ids:                       # all fingers lifted
-                if self.held is not None:
-                    c = self.held
-                    c.state = "free"
-                    c.vel = np.clip(self.hold_v * self.p.throw, -14, 14)
-                    c.w = np.clip(self.hold_w * self.p.throw, -25, 25)
-                    c.still = 0.0
-                    self.held = None
-                    self.release_t = self.t
-                self.cam_drag = False
+                self._end_gesture()
+            if self.gesture:
+                self.gesture["max_n"] = max(self.gesture["max_n"], len(ids))
             self.prev = dict(fingers)                        # re-baseline when fingers change
             return
-
         n = len(fingers)
         if n == 0:
             return
-        cur = np.array([fingers[k] for k in sorted(ids)], float)
-        old = np.array([self.prev[k] for k in sorted(ids)], float)
+        keys = sorted(ids)
+        cur = np.array([fingers[k] for k in keys], float)
+        old = np.array([self.prev[k] for k in keys], float)
         dc = cur.mean(0) - old.mean(0)
-        if self.held is not None:
-            c = self.held
+        if self.gesture:
+            self.gesture["moved"] += math.hypot(*dc)
+        c = self.active
+        if c is not None:
+            self.touched = True
             if n == 2:
-                depth = max(1.5, float(np.dot(c.pos - self.eye, self.fwd)))
-                scale = 2 * depth * math.tan(math.radians(FOV) / 2) / self.h
-                c.pos += (self.right * dc[0] - self.up * dc[1]) * scale
-                a0 = math.atan2(*(old[1] - old[0])[::-1])
-                a1 = math.atan2(*(cur[1] - cur[0])[::-1])
+                depth = max(1.5, float(np.dot(self.hover - self.eye, self.fwd)))
+                scale = 2 * depth * math.tan(math.radians(FOV) / 2) / self.h * self.p.move_speed
+                self.hover += (self.right * dc[0] - self.up * dc[1]) * scale
+                a0 = math.atan2(old[1, 1] - old[0, 1], old[1, 0] - old[0, 0])
+                a1 = math.atan2(cur[1, 1] - cur[0, 1], cur[1, 0] - cur[0, 0])
                 twist = (a1 - a0 + math.pi) % (2 * math.pi) - math.pi
                 c.R = axis_angle(self.fwd, twist) @ c.R
                 d0, d1 = np.linalg.norm(old[1] - old[0]), np.linalg.norm(cur[1] - cur[0])
                 if d0 > 10:
                     push = (d1 / d0 - 1) * depth * 1.2
-                    new_depth = depth - push
-                    if 2.5 < new_depth < 20:
-                        c.pos -= self.fwd * push
+                    if 3.0 < depth - push < 18:
+                        self.hover -= self.fwd * push
+                self.hover[1] = max(self.hover[1], 0.9)
+                for k in (0, 2):
+                    self.hover[k] = max(-6.0, min(6.0, self.hover[k]))
             else:                                            # 1 or 3+ fingers: trackball
-                k = 0.011 * self.p.spin_speed
-                ang = math.hypot(*dc) * k
+                ang = math.hypot(*dc) * 0.011 * self.p.spin_speed
                 if ang > 0:
                     c.R = axis_angle(self.up * dc[0] + self.right * dc[1], ang) @ c.R
-            c.R = orthonormalize(c.R)
-        elif self.cam_drag:
+            c.R = reorthonormalize(c.R)
+        else:                                                # no active cube: move the camera
             if n == 1:
                 self.yaw -= dc[0] * 0.008
                 self.pitch = min(1.35, max(0.08, self.pitch + dc[1] * 0.006))
-            elif n >= 2:
+            else:
                 d0, d1 = np.linalg.norm(old[1] - old[0]), np.linalg.norm(cur[1] - cur[0])
                 if d0 > 10:
                     self.dist = min(18, max(4, self.dist * d0 / d1))
             self._camera()
         self.prev = dict(fingers)
 
+    def _end_gesture(self):
+        g, self.gesture = self.gesture, None
+        if g is None:
+            return
+        quick = self.t - g["t0"] < 0.3 and g["moved"] < 14
+        if quick and g["max_n"] == 1:                        # a tap
+            x, y = g["start"]
+            t, lx, ly = self.last_tap
+            if self.t - t < 0.4 and math.hypot(x - lx, y - ly) < 70:
+                self.last_tap = (-9.0, 0.0, 0.0)             # double-tap: set the cube down
+                self._drop()
+                return
+            self.last_tap = (self.t, x, y)
+            c = self._pick(x, y)
+            if c is not None and c is not self.active and c.state in ("sleep", "free"):
+                self._drop()                                 # tap a cube on the floor: pick it up
+                self._present(c)
+            return
+        if self.active is not None and g["max_n"] >= 2:      # a quick flick throws it
+            if np.linalg.norm(self.hold_v) > 3.0:
+                self._drop(self.hold_v * self.p.throw, self.hold_w * self.p.throw)
+
     # ------------------------------------------------------------- physics
     def update(self, dt):
         self.t += dt
-        p = self.p
-        # presented cube: drift down into place, bob and turn slowly
-        if self.presented is not None:
-            c = self.presented
-            c.age += dt
-            c.pos += (PRESENT_AT + [0, 0.08 * math.sin(self.t * 1.6), 0] - c.pos) * min(1.0, dt * 3.0)
-            c.R = orthonormalize(axis_angle([0.15, 1, 0.1], dt * 0.6) @ c.R)
-        # held cube: keep it off the floor, estimate its velocity for throwing
-        if self.held is not None:
-            c = self.held
-            c.pos[1] = max(c.pos[1], 0.9)
+        c = self.active
+        if c is not None:
+            if not self.touched:                             # idle: bob and turn slowly
+                target = self.hover + [0, 0.08 * math.sin(self.t * 1.6), 0]
+                c.R = reorthonormalize(axis_angle([0.15, 1, 0.1], dt * 0.6) @ c.R)
+            else:
+                target = self.hover
+            c.pos += (target - c.pos) * min(1.0, dt * (12.0 if self.touched else 3.0))
             v = (c.pos - self.last_pos) / dt
             dR = c.R @ self.last_R.T
             ang = math.acos(max(-1.0, min(1.0, (np.trace(dR) - 1) / 2)))
@@ -358,14 +404,12 @@ class Scene(BaseScene):
             self.hold_v = self.hold_v * 0.6 + v * 0.4
             self.hold_w = self.hold_w * 0.6 + wv * 0.4
             self.last_pos, self.last_R = c.pos.copy(), c.R.copy()
-        # rigid bodies, 4 small steps per frame for stability
-        h = dt / 4
-        for _ in range(4):
-            self._step(h)
-        # present the next cube once the last one has landed
-        if self.presented is None and self.held is None and self.release_t is not None:
-            free = [c for c in self.cubes if c.state == "free"]
-            if not free or self.t - self.release_t > 3.0:
+        if any(k.state == "free" for k in self.cubes):
+            h = dt / 2                                       # 2 small steps per frame
+            for _ in range(2):
+                self._step(h)
+        if self.active is None and self.release_t is not None:
+            if not any(k.state == "free" for k in self.cubes) or self.t - self.release_t > 3.0:
                 self.release_t = None
                 self._present()
 
@@ -376,37 +420,49 @@ class Scene(BaseScene):
         for c in free:
             c.vel[1] -= g * h
             c.pos += c.vel * h
-            sp = np.linalg.norm(c.w)
+            sp = math.sqrt(float(c.w @ c.w))
             if sp > 1e-9:
                 c.R = axis_angle(c.w / sp, sp * h) @ c.R
-        for c in free:
             c.touching = False
-        for _ in range(3):
+        # broad phase once per step: which cubes are close enough to touch
+        pos = [k.pos.tolist() for k in self.cubes]
+        pairs = []
+        for i, c in enumerate(self.cubes):
+            if c.state != "free":
+                continue
+            cx, cy, cz = pos[i]
+            for j, o in enumerate(self.cubes):
+                if j == i or (o.state == "free" and j < i):
+                    continue
+                ox, oy, oz = pos[j]
+                if (ox - cx) ** 2 + (oy - cy) ** 2 + (oz - cz) ** 2 < 3.1:
+                    pairs.append((c, o))
+        up = np.array([0.0, 1.0, 0.0])
+        for _ in range(2):                                   # 2 rounds of contact fixing
             for c in free:
-                touching = False
                 P = c.corners()
-                for i in np.nonzero(P[:, 1] < 0)[0]:          # floor
-                    self._contact(c, None, P[i], np.array([0.0, 1.0, 0.0]), -P[i, 1])
-                    touching = True
-                for o in self.cubes:                          # other cubes
-                    if o is c or np.sum((o.pos - c.pos) ** 2) > 3.1:
-                        continue
-                    if o.state == "free" and id(o) < id(c):
-                        continue                              # free pairs handled once
-                    touching |= self._cube_pair(c, o)
-                c.touching = c.touching or touching or bool(np.any(P[:, 1] < 0.01))
+                low = P[:, 1] < 0
+                if low.any():
+                    for i in np.nonzero(low)[0]:            # floor
+                        self._contact(c, None, P[i], up, -P[i, 1])
+                    c.touching = True
+                elif P[:, 1].min() < 0.01:
+                    c.touching = True
+            for c, o in pairs:
+                if self._cube_pair(c, o):
+                    c.touching = True
         for c in free:
-            c.R = orthonormalize(c.R) if np.random.random() < 0.1 else c.R
-            damp = 1.0 - (2.0 if getattr(c, "touching", False) else 0.05) * h
-            c.w *= damp
+            if np.random.random() < 0.05:
+                c.R = reorthonormalize(c.R)
+            c.w *= 1.0 - (2.0 if c.touching else 0.05) * h
             c.vel *= 1.0 - 0.03 * h
-            for k in (0, 2):                                   # invisible walls keep cubes in view
+            for k in (0, 2):                                 # invisible walls keep cubes in view
                 if abs(c.pos[k]) > 6.5:
                     c.pos[k] = math.copysign(6.5, c.pos[k])
                     c.vel[k] *= -0.4
-            if np.linalg.norm(c.vel) < 0.08 and np.linalg.norm(c.w) < 0.15 and getattr(c, "touching", False):
+            if c.touching and float(c.vel @ c.vel) < 0.016 and float(c.w @ c.w) < 0.07:
                 c.still += h
-                if c.still > 0.4:
+                if c.still > 0.25:
                     c.state, c.vel[:], c.w[:] = "sleep", 0, 0
             else:
                 c.still = 0.0
@@ -541,22 +597,24 @@ class Scene(BaseScene):
         gl.cull(False)
         gl.depth(False)
 
-        if self.t < 7 and not self.prev:                     # a hint for the first few seconds
+        if self.t < 9 and not self.prev:                     # a hint for the first few seconds
             if not hasattr(self, "_hint"):
-                lines = ["1 finger: spin   2: carry, twist, pinch", "3: tumble   empty space: orbit view"]
+                lines = ["drag anywhere: spin   2 fingers: move, twist, pinch",
+                         "double-tap: set it down   tap a cube: pick it up"]
                 imgs = [self.font.render(s, True, (40, 40, 46)) for s in lines]
                 hint = pygame.Surface((max(i.get_width() for i in imgs) + 20, 52), pygame.SRCALPHA)
                 pygame.draw.rect(hint, (255, 255, 255, 170), hint.get_rect(), border_radius=10)
                 for k, im in enumerate(imgs):
                     hint.blit(im, im.get_rect(center=(hint.get_width() // 2, 15 + k * 22)))
                 self._hint = gl.surface_texture(hint, "cubes_hint")
-            gl.blit_at(self._hint, (self.w - self._hint.w) // 2, self.h - 70, alpha=min(1.0, 7 - self.t))
+            gl.blit_at(self._hint, (self.w - self._hint.w) // 2, self.h - 70, alpha=min(1.0, 9 - self.t))
 
     # ------------------------------------------------------------- preview
     def preview(self, step):
         """Drop a few cubes into a pile, then present a new one."""
         rng = np.random.default_rng(3)
         self.cubes.clear()
+        self.active = self.held = None
         for i in range(5):
             c = Cube(i, [rng.uniform(-1.4, 1.4), 1.2 + i * 1.3, rng.uniform(-1.2, 0.8)],
                      axis_angle(rng.normal(size=3), rng.uniform(0, 3)))
@@ -568,6 +626,7 @@ class Scene(BaseScene):
         for _ in range(240):
             self.update(step)
         self.count = 5
+        self.release_t = None
         self._present()
 
     PREVIEW_AFTER = 150

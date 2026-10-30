@@ -8,7 +8,7 @@ Regenerate previews and this page with `python tools/make_previews.py`.
 |---|---|
 | ![balls](balls/preview.png) | **[Bouncing balls](balls/README.md)**<br>`python run.py balls`<br>Rigid-body balls in a box; tap to blast them apart |
 | ![boids](boids/preview.png) | **[Flocking birds](boids/README.md)**<br>`python run.py boids`<br>A flock of birds wheeling over a dusk sky (boids) |
-| ![cubes](cubes/preview.png) | **[Cubes (GPU, 3D)](cubes/README.md)**<br>`python run.py cubes`<br>Cubes: pick up a cube with your fingers, spin it like in a CAD program, let it fall |
+| ![cubes](cubes/preview.png) | **[Cubes (GPU, 3D)](cubes/README.md)**<br>`python run.py cubes`<br>Cubes: turn a cube in space with your fingers, set it down, watch it fall |
 | ![grass](grass/preview.png) | **[Grass in the wind](grass/README.md)**<br>`python run.py grass`<br>Low-resolution field of grass blowing in the wind |
 | ![hillside](hillside/preview.png) | **[Lakeside hillside](hillside/README.md)**<br>`python run.py hillside`<br>A painted lakeside hillside: tall grass and pink plumes in the summer wind |
 | ![ink](ink/preview.png) | **[Ink in water](ink/README.md)**<br>`python run.py ink`<br>Ink in water: stir coloured ink through a fluid with your finger |
