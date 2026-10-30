@@ -34,6 +34,9 @@
   .val { font-variant-numeric: tabular-nums; color: var(--muted); min-width: 4ch; text-align: right; }
   input[type=range] { width: 100%; accent-color: var(--accent); margin: 8px 0 0; height: 28px; }
   .help { color: var(--muted); font-size: 13px; margin-top: 2px; }
+  .seg { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .seg button { flex: 1 1 auto; padding: 7px 10px; font-size: 14px; }
+  .seg button.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
   .buttons { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
   .buttons button { flex: 1; min-width: 120px; }
   button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
@@ -101,6 +104,18 @@ function render(s) {
   if (!s.params.length) box.innerHTML = '<div class="row note">This scene has no settings.</div>';
   for (const p of s.params) {
     const row = document.createElement("div"); row.className = "row";
+    if (p.choices && p.choices.length) {         // named options: a row of buttons
+      row.innerHTML = `<div class="top"><span class="label">${p.label}${p.reset ? "<small>↻</small>" : ""}</span></div>
+        <div class="seg">${p.choices.map((c, i) =>
+          `<button data-i="${i}" class="${i === Math.round(p.value) ? "on" : ""}">${c}</button>`).join("")}</div>
+        ${p.help ? `<div class="help">${p.help}</div>` : ""}`;
+      row.querySelectorAll(".seg button").forEach(b => b.addEventListener("click", () => {
+        row.querySelectorAll(".seg button").forEach(o => o.classList.toggle("on", o === b));
+        api("/api/params", { [p.name]: Number(b.dataset.i) });
+      }));
+      box.appendChild(row);
+      continue;
+    }
     row.innerHTML = `<div class="top"><span class="label">${p.label}${p.reset ? "<small>↻</small>" : ""}</span>
       <span class="val">${fmt(p.value, p.step)}</span></div>
       <input type="range" min="${p.min}" max="${p.max}" step="${p.step}" value="${p.value}">

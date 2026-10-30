@@ -93,6 +93,8 @@ class Controller:
 
     def save_preset(self):
         with self.lock:
+            if not self.schema:                   # nothing to save (e.g. the home screen)
+                return ""
             path = self.preset_path(self.scene_name)
             path.write_text(json.dumps(self.values, indent=2) + "\n")
             return str(path)

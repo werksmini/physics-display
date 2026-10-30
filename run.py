@@ -1,13 +1,15 @@
 """Run a playground scene.
 
-    python run.py grass              # Pi: fullscreen on the panel
+    python run.py                    # the home screen (how the boot service starts it)
+    python run.py pool               # Pi: straight into a scene, fullscreen on the panel
     python run.py grass --window     # laptop: 480x640 window, mouse = touch
     python run.py --list             # show available scenes
-    python run.py                    # the last scene shown (how the boot service starts it)
     python run.py pool --gpu         # draw through the GPU (needed for shader scenes)
 
-On the Pi, hold a finger still in any corner of the screen for two seconds to
-switch to the next scene.
+On the Pi, hold a finger still against an edge of the screen for three seconds:
+    top edge    -> back to the home screen
+    right edge  -> next vignette
+    left edge   -> previous vignette
 
 While it runs, open the control panel in a browser:
     http://<pi-address>:8000   (from the laptop or phone)
@@ -27,6 +29,7 @@ import urllib.request
 import pygame
 
 from playground.control import Controller, start_server
+from playground.launcher import HOME, Launcher
 from playground.loader import exists, list_scenes, load_module, preset_path
 from playground.scene import Values
 from playground import state
@@ -36,8 +39,8 @@ W, H = 480, 640                   # panel resolution (portrait)
 STEP = 1 / 60                     # fixed physics/animation time step
 MAX_STEPS = 2                     # when a frame is slow, catch up at most this much
                                   # (more would make the next frame slower still)
-HOLD_SECONDS = 2.0                # hold still in a corner this long to switch scene
-CORNER = 80                       # corner zone size, in panel pixels
+HOLD_SECONDS = 3.0                # hold still against an edge this long to navigate
+EDGE = 40                         # edge zone width, in pixels
 
 
 def open_gpu():
@@ -125,33 +128,55 @@ def _stop_on_signal(signum, frame):
     raise KeyboardInterrupt          # run the normal clean-up (clear screen, free the port)
 
 
-class CornerHold:
-    """On-screen scene switching with no computer: hold a finger still in any
-    corner of the panel for HOLD_SECONDS and the next scene starts."""
+class EdgeHold:
+    """Getting around with no computer: hold a finger still against an edge.
+    Top edge: home screen. Right edge: next vignette. Left edge: previous.
+    Coordinates are the scene's (so "top" is the top as you look at it)."""
 
-    def __init__(self, w, h):
-        self.w, self.h = w, h
-        self.start = None                     # (x, y, time) of a press in a corner
-        self.fired = False
+    ACTIONS = {"top": ("home", "Home"), "right": ("next", "Next  \u203a"), "left": ("prev", "\u2039  Previous")}
 
-    def feed(self, kind, x, y, now):
-        """Return True when a hold completes."""
+    def __init__(self):
+        self.start = None                     # (edge, x, y, time)
+        self.font = pygame.font.Font(None, 26)
+
+    def feed(self, kind, x, y, w, h, now):
         if kind == "down":
-            in_corner = (x < CORNER or x > self.w - CORNER) and (y < CORNER or y > self.h - CORNER)
-            self.start = (x, y, now) if in_corner else None
-            self.fired = False
-        elif kind == "move" and self.start and math.hypot(x - self.start[0], y - self.start[1]) > 25:
+            near = {"top": y, "left": x, "right": w - 1 - x}
+            edge = min(near, key=near.get)
+            self.start = (edge, x, y, now) if near[edge] < EDGE else None
+        elif kind == "move" and self.start and math.hypot(x - self.start[1], y - self.start[2]) > 25:
             self.start = None                 # moved away: it's a normal touch
         elif kind == "up":
             self.start = None
-        return False
 
     def check(self, now):
-        if self.start and not self.fired and now - self.start[2] >= HOLD_SECONDS:
-            self.fired = True
+        """'home', 'next' or 'prev' when a hold completes."""
+        if self.start and now - self.start[3] >= HOLD_SECONDS:
+            edge = self.start[0]
             self.start = None
-            return True
-        return False
+            return self.ACTIONS[edge][0]
+        return None
+
+    def indicator(self, w, h, now):
+        """(surface, (x, y)) showing the hold filling up, once it's clearly a hold."""
+        if not self.start or now - self.start[3] < 0.5:
+            return None
+        edge, x, y, t0 = self.start
+        frac = min(1.0, (now - t0) / HOLD_SECONDS)
+        label = self.font.render(self.ACTIONS[edge][1], True, (245, 245, 245))
+        bw = max(label.get_width() + 28, 120)
+        img = pygame.Surface((bw, 44), pygame.SRCALPHA)
+        pygame.draw.rect(img, (0, 0, 0, 170), img.get_rect(), border_radius=12)
+        img.blit(label, label.get_rect(center=(bw // 2, 17)))
+        pygame.draw.rect(img, (255, 255, 255, 60), (12, 33, bw - 24, 4), border_radius=2)
+        pygame.draw.rect(img, (246, 206, 60), (12, 33, int((bw - 24) * frac), 4), border_radius=2)
+        if edge == "top":
+            pos = (min(max(x - bw // 2, 6), w - bw - 6), EDGE + 16)
+        elif edge == "left":
+            pos = (EDGE + 16, min(max(y - 22, 6), h - 50))
+        else:
+            pos = (w - bw - EDGE - 16, min(max(y - 22, 6), h - 50))
+        return img, pos
 
 
 class Banner:
@@ -241,8 +266,12 @@ class Stage:
         pygame.display.flip()
 
 
-def build_scene(ctrl, name, stage, switching):
+def build_scene(ctrl, name, stage, switching, menu=None, last=None):
     """Import (or re-import, picking up code edits) and construct a scene."""
+    if name == HOME:                        # the home screen: drawn on the GPU when there is one
+        ctrl.load_scene(HOME, Launcher)
+        stage.configure(False, stage.gl is not None)
+        return Launcher(*stage.size, Values(ctrl), gl=stage.gl, scenes=menu, last=last)
     mod = load_module(name)
     if switching:
         ctrl.load_scene(name, mod.Scene)
@@ -278,8 +307,8 @@ def main():
         return
     saved = state.load()
     if args.scene is None:
-        args.scene = saved.get("scene") if saved.get("scene") in available else "pool"
-    if args.scene not in available:
+        args.scene = HOME
+    if args.scene not in available and args.scene != HOME:
         if not exists(args.scene):
             sys.exit(f"unknown scene '{args.scene}'. Try: {', '.join(available)}")
         available[args.scene] = list_scenes(retired=True).get(args.scene, args.scene)   # retired, asked for by name
@@ -290,6 +319,8 @@ def main():
         signal.signal(signal.SIGHUP, _stop_on_signal)
 
     # claim the panel first, so a copy that's already running hands over the screen
+    menu = dict(available)                       # the vignettes, in order (for the home screen and next/prev)
+    available = {HOME: "Home (vignettes)", **available}
     ctrl = Controller(available, preset_path)
     ctrl.flip_landscape = bool(saved.get("flip_landscape", False))
     if not args.no_panel:
@@ -309,17 +340,19 @@ def main():
     clock = pygame.time.Clock()
     stage = Stage(screen, fb, window, gl)
     try:
-        scene = build_scene(ctrl, args.scene, stage, switching=True)
+        scene = build_scene(ctrl, args.scene, stage, True, menu, saved.get("scene"))
     except Exception as err:                     # e.g. a GPU scene but no GPU (--fb): use a CPU scene
         print(f"Couldn't start '{args.scene}': {err}\nStarting 'grass' instead.")
         args.scene = "grass"
         available.setdefault("grass", "Grass")
-        scene = build_scene(ctrl, args.scene, stage, switching=True)
-    state.save(scene=args.scene)
-    corner = CornerHold(w, h)
+        scene = build_scene(ctrl, args.scene, stage, True, menu)
+    if args.scene != HOME:
+        state.save(scene=args.scene)
+    edges = EdgeHold()
     banner = Banner()
-    banner.show(available[args.scene], time.time(), 2.0)
-    names = list(available)
+    if args.scene != HOME:
+        banner.show(available[args.scene], time.time(), 2.0)
+    names = list(menu) or [HOME]
     flip_seen = ctrl.flip_landscape
 
     acc = 0.0
@@ -333,8 +366,16 @@ def main():
                 return
 
             now = time.time()
-            if corner.check(now):                  # corner hold: next scene
-                ctrl.request_scene(names[(names.index(ctrl.scene_name) + 1) % len(names)])
+            action = edges.check(now)              # edge hold: home / next / previous
+            if action == "home":
+                ctrl.request_scene(HOME)
+            elif action:
+                cur = ctrl.scene_name
+                if cur in names:
+                    k = names.index(cur) + (1 if action == "next" else -1)
+                else:                              # from home (or a retired scene): first / last
+                    k = 0 if action == "next" else -1
+                ctrl.request_scene(names[k % len(names)])
             if ctrl.flip_landscape != flip_seen:
                 flip_seen = ctrl.flip_landscape
                 state.save(flip_landscape=flip_seen)
@@ -343,10 +384,10 @@ def main():
             name = ctrl.take_pending_scene()
             if name or ctrl.take_reset():
                 try:
-                    scene = build_scene(ctrl, name or ctrl.scene_name, stage,
-                                        switching=bool(name))
+                    scene = build_scene(ctrl, name or ctrl.scene_name, stage, bool(name),
+                                        menu, state.load().get("scene"))
                     ctrl.last_error = ""
-                    if name:
+                    if name and name != HOME:
                         state.save(scene=name)
                         banner.show(available[name], now)
                 except Exception:
@@ -371,8 +412,9 @@ def main():
                     dragging = False
                     events.append(("up", *e.pos))
             for kind, x, y in events:
-                corner.feed(kind, x, y, now)        # raw panel coordinates
-                scene.touch(kind, *stage.map_touch(x, y, ctrl.flip_landscape))
+                sx, sy = stage.map_touch(x, y, ctrl.flip_landscape)
+                edges.feed(kind, sx, sy, *stage.size, now)
+                scene.touch(kind, sx, sy)
                 if kind == "down":
                     mouse_finger = (x, y)
                 elif kind == "move" and mouse_finger:
@@ -387,6 +429,9 @@ def main():
             while acc >= STEP:
                 scene.update(STEP)
                 acc -= STEP
+            if getattr(scene, "launch", None):      # the home screen picked a vignette
+                ctrl.request_scene(scene.launch)
+                scene.launch = None
             fps_img = font.render(f"{clock.get_fps():3.0f} fps", True, (230, 230, 230), (0, 0, 0)) \
                 if ctrl.show_fps else None
             if stage.gpu_scene:
@@ -397,6 +442,9 @@ def main():
                 b = banner.image(now)
                 if b:
                     overlays.append((b, ((w - b.get_width()) // 2, (h - b.get_height()) // 2)))
+                ind = edges.indicator(*stage.size, now)
+                if ind:
+                    overlays.append(ind)
                 stage.present_gl(overlays)
             else:
                 canvas = stage.canvas
@@ -404,6 +452,9 @@ def main():
                 if fps_img:
                     canvas.blit(fps_img, (4, 4))
                 banner.draw(canvas, now)
+                ind = edges.indicator(*stage.size, now)
+                if ind:
+                    canvas.blit(*ind)
                 stage.present(ctrl.flip_landscape)
     except KeyboardInterrupt:
         pass

@@ -35,7 +35,10 @@ from playground.scene import BaseScene, Param
 
 CELL = 5                                    # wave cell size in pixels
 BODY_SCALE = 0.5                            # body texture resolution vs screen
-COPING = 0.30                               # stone edge width, metres
+SHAPES = ("Curved deck", "Rounded corner", "Square corner", "Diagonal")
+SIDES = ("Top left", "Top right", "Top", "Left", "Right", "None")
+TYPES = ("Stone", "Tile", "Gutter", "Wood deck")
+TURN_R = 0.9                                # tightest turning circle while swimming, metres
 
 SKIN = [(236, 196, 166), (208, 160, 120), (170, 118, 82), (122, 82, 56), (226, 178, 150), (96, 64, 44)]
 SUITS = [(28, 40, 86), (20, 20, 24), (120, 30, 46), (24, 104, 110), (70, 46, 96), (160, 60, 40)]
@@ -50,7 +53,8 @@ uniform sampler2D u_body;   // swimmers under the water (rgba)
 uniform float u_time;
 uniform vec4 u_a;           // ambient wave, ripple strength, caustics, refraction
 uniform vec4 u_b;           // tile size, depth tint, glints, px per metre
-uniform vec4 u_edge;        // the deck: a disc in the corner (centre x, y, radius in metres), coping width
+uniform vec4 u_edge;        // pool edge: shape, sides, deck size (m), corner radius (m)
+uniform vec4 u_edge2;       // edge type, -, screen width (m), -
 uniform vec4 u_misc;        // screen w, h (px), lane x, lane end y (metres)
 varying vec2 uv;
 
@@ -74,30 +78,98 @@ float caustic(vec2 q) {
     return c / 3.0;
 }
 
-void main() {
-    vec2 px = uv * u_misc.xy;
-    vec2 p = px / u_b.w;                                   // metres
-    float d = length(p - u_edge.xy) - u_edge.z;            // >0 in the water, metres from the wall
-    vec3 L = normalize(vec3(0.35, -0.45, 0.82));           // toward the sun (up and to the right)
+// ---- the pool edge as a distance: >0 in the water (metres from the wall), <0 on the deck.
+// Shapes are worked out for a corner at the top left; right-hand layouts are mirrored.
+vec2 edgeLocal(vec2 p) {
+    float sides = u_edge.y;
+    if (abs(sides - 1.0) < 0.5 || abs(sides - 4.0) < 0.5) p.x = u_edge2.z - p.x;   // top right, right
+    return p;
+}
 
-    if (d < 0.0) {
-        // ---- coping and deck, in the sun
-        vec2 rel = p - u_edge.xy;
-        float along = atan(rel.y, rel.x) * u_edge.z;
-        float c = -d / u_edge.w;                            // 0 at the water, 1 at the deck side
-        vec3 col;
-        if (c < 1.0) {
-            float round = sqrt(max(0.0, 1.0 - pow(1.0 - c * 1.6, 2.0)));       // bullnose profile
+float edgeDist(vec2 q) {
+    float shape = u_edge.x, sides = u_edge.y, T = u_edge.z, r = max(u_edge.w, 0.02);
+    if (sides > 4.5) return 100.0;                                    // no edge in view
+    if (abs(sides - 2.0) < 0.5) return q.y - T;                        // top
+    if (sides > 2.5) return q.x - T;                                   // left / right
+    if (shape < 0.5) return length(q + vec2(r)) - (T + r);            // curved deck: a rounded bulge
+    if (shape < 1.5) {                                                 // rounded pool corner
+        vec2 k = vec2(T + r) - q;
+        return r - length(max(k, 0.0)) - min(max(k.x, k.y), 0.0);
+    }
+    if (shape < 2.5) return min(q.x - T, q.y - T);                     // square corner
+    return (q.x + q.y - 1.5 * T) * 0.7071;                             // diagonal
+}
+
+vec3 concrete(vec2 p, vec2 px) {
+    vec3 col = vec3(0.80, 0.76, 0.69) * (0.92 + 0.10 * hash(floor(px / 2.0)) + 0.05 * hash(floor(p * 3.0)));
+    return col * (0.96 + 0.04 * sin(p.x * 1.3 + p.y * 0.7));
+}
+
+vec3 deck(vec2 p, vec2 px, float d) {
+    // distance onto the deck (c, metres) and a coordinate along the edge (for joints and tiles)
+    vec2 q = edgeLocal(p);
+    vec2 e = vec2(0.01, 0.0);
+    vec2 g = normalize(vec2(edgeDist(q + e.xy) - edgeDist(q - e.xy), edgeDist(q + e.yx) - edgeDist(q - e.yx)) + 1e-5);
+    float along = dot(q, vec2(-g.y, g.x));
+    if (u_edge.x < 0.5 && u_edge.y < 1.5) {                           // around the curved deck: arc length
+        vec2 rel = q + vec2(u_edge.w);
+        along = atan(rel.y, rel.x) * (u_edge.z + u_edge.w);
+    }
+    float c = -d;
+    float type = u_edge2.x;
+    vec3 col;
+    if (type < 0.5) {                                                  // stone bullnose coping
+        if (c < 0.30) {
+            float k = c / 0.30;
+            float round = sqrt(max(0.0, 1.0 - pow(1.0 - k * 1.6, 2.0)));
             col = vec3(0.86, 0.83, 0.77) * (0.80 + 0.22 * round) * (0.95 + 0.06 * hash(floor(p * 60.0)));
             float joint = abs(fract(along / 0.6) - 0.5) * 0.6;
             col *= 1.0 - 0.18 * (1.0 - smoothstep(0.0, 0.012, joint));
-            col *= 1.0 - 0.25 * smoothstep(0.85, 1.0, c);                        // the joint to the deck
-        } else {
-            vec2 g2 = floor(px / 2.0);
-            col = vec3(0.80, 0.76, 0.69) * (0.92 + 0.10 * hash(g2) + 0.05 * hash(floor(p * 3.0)));
-            col *= 0.96 + 0.04 * sin(p.x * 1.3 + p.y * 0.7);
-        }
-        col *= 1.0 - 0.12 * smoothstep(0.02, 0.0, d + 0.0);                       // edge of the stone
+            col *= 1.0 - 0.25 * smoothstep(0.85, 1.0, k);
+        } else col = concrete(p, px);
+    } else if (type < 1.5) {                                           // a band of blue mosaic tiles
+        if (c < 0.24) {
+            vec2 t = vec2(along, c) / 0.06;
+            vec2 f = fract(t);
+            float gr = smoothstep(0.0, 0.10, f.x) * smoothstep(1.0, 0.90, f.x) * smoothstep(0.0, 0.10, f.y) * smoothstep(1.0, 0.90, f.y);
+            float h = hash(floor(t));
+            vec3 tile = mix(vec3(0.10, 0.30, 0.62), vec3(0.20, 0.50, 0.78), h);
+            if (h > 0.86) tile = vec3(0.85, 0.90, 0.92);
+            col = mix(vec3(0.70, 0.72, 0.72), tile, gr);
+            col *= 0.9 + 0.1 * smoothstep(0.0, 0.05, c);
+        } else col = concrete(p, px) * (1.0 - 0.2 * smoothstep(0.30, 0.24, c));
+    } else if (type < 2.5) {                                           // overflow gutter with a grate
+        if (c < 0.17) {
+            float bar = smoothstep(0.35, 0.5, abs(fract(along / 0.035) - 0.5) * 2.0);
+            vec3 slot = vec3(0.10, 0.20, 0.24);
+            vec3 steel = vec3(0.78, 0.80, 0.82) * (0.85 + 0.15 * smoothstep(0.0, 0.17, c));
+            col = mix(steel, slot, bar * smoothstep(0.015, 0.03, c) * smoothstep(0.17, 0.15, c));
+        } else if (c < 0.38) {
+            float k = (c - 0.17) / 0.21;
+            col = vec3(0.86, 0.83, 0.77) * (0.88 + 0.14 * sin(k * 3.14));
+            float joint = abs(fract(along / 0.6) - 0.5) * 0.6;
+            col *= 1.0 - 0.18 * (1.0 - smoothstep(0.0, 0.012, joint));
+        } else col = concrete(p, px);
+    } else {                                                           // wooden deck boards right to the water
+        float board = floor(c / 0.14);
+        float seam = abs(fract(c / 0.14) - 0.5) * 0.14;
+        float grain = sin(along * 3.0 + hash(vec2(board, 2.0)) * 30.0 + sin(along * 0.7 + board) * 2.0);
+        col = vec3(0.62, 0.45, 0.30) * (0.88 + 0.16 * hash(vec2(board, 5.0)) + 0.04 * grain);
+        float butt = abs(fract(along / 1.8 + hash(vec2(board, 9.0))) - 0.5) * 1.8;
+        col *= 1.0 - 0.45 * (1.0 - smoothstep(0.0, 0.008, min(0.07 - seam, butt)));
+    }
+    col *= 1.0 - 0.12 * smoothstep(0.02, 0.0, -c);                     // the very edge
+    return col;
+}
+
+void main() {
+    vec2 px = uv * u_misc.xy;
+    vec2 p = px / u_b.w;                                   // metres
+    float d = edgeDist(edgeLocal(p));                       // >0 in the water, metres from the wall
+    vec3 L = normalize(vec3(0.35, -0.45, 0.82));           // toward the sun (up and to the right)
+
+    if (d < 0.0) {                                          // coping and deck, in the sun
+        vec3 col = deck(p, px, d);
         col += (hash(gl_FragCoord.xy + fract(u_time) * 61.0) - 0.5) / 64.0;
         gl_FragColor = vec4(col, 1.0);
         return;
@@ -180,6 +252,7 @@ class Swimmer:
         self.mode = "tread"             # tread, breast, float, noodle
         self.phase = rng.random()
         self.speed = 0.0
+        self.w = 0.0                    # turning rate (radians per second)
         self.target = None
         self.alpha = 1.0
         self.plan = []                  # queue of things to do (others)
@@ -222,6 +295,13 @@ class Scene(BaseScene):
         Param("glints", 1.0, 0, 3, 0.05, "Sun glints"),
         Param("depth", 0.55, 0, 1, 0.01, "Water depth tint"),
         Param("tile_size", 0.16, 0.05, 0.5, 0.01, "Tile size", help="Metres."),
+        Param("edge_sides", 0, 0, 0, 1, choices=SIDES, label="Pool edge: where",
+              help="Which corner or side of the screen the pool's edge is on."),
+        Param("edge_shape", 0, 0, 0, 1, choices=SHAPES, label="Pool edge: shape", help="For corners."),
+        Param("edge_type", 0, 0, 0, 1, choices=TYPES, label="Pool edge: type"),
+        Param("edge_size", 2.1, 0.3, 4, 0.05, "Deck size", help="How far the deck reaches into view, metres."),
+        Param("edge_radius", 0.5, 0, 4, 0.05, "Corner radius",
+              help="Rounded corner: how round. Curved deck: smaller = a rounder bulge."),
         Param("render_scale", 1.0, 0.25, 1.0, 0.05, "Render scale", reset=True,
               help="Draw the water smaller and scale it up: faster on the Pi, a little softer."),
         Param("view", 6.7, 4, 12, 0.1, "View height", reset=True,
@@ -237,24 +317,12 @@ class Scene(BaseScene):
         self.rng = random.Random()
         self.pxm = self.h / self.p.view                  # pixels per metre
         self.SW, self.SH = self.w / self.pxm, self.h / self.pxm
-        # the deck: a rounded corner in the top left; the pool curves around it and carries on
-        # off the left, right and bottom of the screen
-        self.edge_c = np.array([-0.5, -0.5])
-        R = self.edge_r = 2.6
-        self.lane_x = 1.15                              # where the sunlit pool's lane line is
-        self.lane_end = self._wall_y(self.lane_x) + 0.45
-
         self.gw, self.gh = self.w // CELL, self.h // CELL
         self.hgt = np.zeros((self.gh, self.gw), np.float32)
         self.vel = np.zeros_like(self.hgt)
         self.pad = np.zeros((self.gh + 2, self.gw + 2), np.float32)
-        cy, cx = (np.mgrid[0:self.gh, 0:self.gw] + 0.5) * CELL / self.pxm
-        inside = (np.hypot(cx - self.edge_c[0], cy - self.edge_c[1]) > R).astype(np.float32)
-        ey, ex = np.mgrid[0:self.gh, 0:self.gw]
-        border = np.minimum(np.minimum(ex, self.gw - 1 - ex), np.minimum(ey, self.gh - 1 - ey))
-        sponge = 1.0 - 0.10 * np.clip(1.0 - border / 10.0, 0, 1) ** 2      # ripples fade off-screen
-        self.mask = inside
-        self.sponge = (sponge * inside).astype(np.float32)
+        self.geom = None
+        self._geometry()
         self.wbuf = np.full((self.gh, self.gw, 4), 128, np.uint8)
         self.wbuf[..., 3] = 255
         self.wave_tex = gl.texture(self.gw, self.gh, self.wbuf.tobytes())
@@ -274,28 +342,104 @@ class Scene(BaseScene):
         self.swimmers.append(first)
         self.taps = {}
 
+    # ------------------------------------------------------------- the pool edge
+    def _edge_key(self):
+        p = self.p
+        return (int(p.edge_shape), int(p.edge_sides), round(p.edge_size, 3), round(p.edge_radius, 3))
+
+    def _dist(self, x, y):
+        """Metres from the pool wall: >0 in the water, <0 on the deck (same maths as the shader).
+        Works on numbers or numpy arrays."""
+        shape, sides, T, r = self.geom
+        r = max(r, 0.02)
+        if sides in (1, 4):                                   # right-hand layouts are mirrored
+            x = self.SW - x
+        if sides == 5:
+            return np.full_like(np.asarray(x, float), 100.0) if np.ndim(x) else 100.0
+        if sides == 2:
+            return y - T
+        if sides in (3, 4):
+            return x - T
+        if shape == 0:
+            return np.hypot(x + r, y + r) - (T + r)
+        if shape == 1:
+            kx, ky = T + r - x, T + r - y
+            return r - np.hypot(np.maximum(kx, 0), np.maximum(ky, 0)) - np.minimum(np.maximum(kx, ky), 0)
+        if shape == 2:
+            return np.minimum(x - T, y - T)
+        return (x + y - 1.5 * T) * 0.7071
+
+    def _grad(self, x, y):
+        e = 0.01
+        gx = (self._dist(x + e, y) - self._dist(x - e, y)) / (2 * e)
+        gy = (self._dist(x, y + e) - self._dist(x, y - e)) / (2 * e)
+        n = math.hypot(gx, gy) or 1.0
+        return gx / n, gy / n
+
+    def _push_to(self, x, y, want):
+        """Move (x, y) along the slope until it's `want` metres from the wall."""
+        for _ in range(4):
+            d = float(self._dist(x, y))
+            if abs(d - want) < 0.01:
+                break
+            gx, gy = self._grad(x, y)
+            x, y = x + gx * (want - d), y + gy * (want - d)
+        return x, y
+
+    def _geometry(self):
+        """Work out everything that depends on the edge: wave mask, lane line, where to enter."""
+        self.geom = self._edge_key()
+        cy, cx = (np.mgrid[0:self.gh, 0:self.gw] + 0.5) * CELL / self.pxm
+        inside = (self._dist(cx, cy) > 0).astype(np.float32)
+        ey, ex = np.mgrid[0:self.gh, 0:self.gw]
+        border = np.minimum(np.minimum(ex, self.gw - 1 - ex), np.minimum(ey, self.gh - 1 - ey))
+        sponge = 1.0 - 0.10 * np.clip(1.0 - border / 10.0, 0, 1) ** 2      # ripples fade off-screen
+        self.mask = inside
+        self.sponge = (sponge * inside).astype(np.float32)
+        self.hgt *= inside
+        self.vel *= inside
+        # the lane line sits where the sunlit pool's does, clear of a side wall
+        sides, T = self.geom[1], self.geom[2]
+        walled_side = sides in (3, 4) or (sides in (0, 1) and self.geom[0] in (1, 2))
+        lx = max(1.15, T + 0.9) if walled_side else 1.15
+        self.lane_x = self.SW - lx if sides in (1, 4) else lx
+        self.lane_end = self._wall_y(self.lane_x) + 0.45
+
     def _wall_y(self, x):
-        """y of the pool wall above x (metres); off the top of the screen past the deck."""
-        dx = x - self.edge_c[0]
-        if abs(dx) >= self.edge_r:
+        """y of the pool wall above x (metres), or -3 when the wall is off the top of the screen."""
+        ys = np.arange(-1.0, self.SH, 0.02)
+        wet = self._dist(np.full_like(ys, x), ys) > 0
+        if wet[0]:
             return -3.0
-        return self.edge_c[1] + math.sqrt(self.edge_r ** 2 - dx * dx)
+        i = int(np.argmax(wet))
+        return float(ys[i]) if wet[i] else -3.0
 
     def _in_pool(self, x, y, margin):
-        return math.hypot(x - self.edge_c[0], y - self.edge_c[1]) > self.edge_r + margin
+        return float(self._dist(x, y)) > margin
 
     def _offscreen(self, s, m=1.0):
         return s.x < -m or s.x > self.SW + m or s.y > self.SH + m
 
     def _side_point(self, side=None):
-        """A point just off the left, right or bottom of the screen."""
+        """A point just off the left, right or bottom of the screen, where there's water."""
         r = self.rng
-        side = side or r.choice(["left", "right", "bottom", "bottom"])
-        if side == "left":
-            return side, (-1.4, r.uniform(self.edge_c[1] + self.edge_r + 0.9, self.SH - 0.6))
-        if side == "right":
-            return side, (self.SW + 1.4, r.uniform(0.7, self.SH - 0.6))
-        return side, (r.uniform(0.6, self.SW - 0.6), self.SH + 1.4)
+        sides = [side] if side else []
+        sides += [k for k in r.sample(["left", "right", "bottom", "bottom"], 4) if k not in sides]
+        for side in sides:
+            for _ in range(12):
+                if side == "left":
+                    y = r.uniform(0.7, self.SH - 0.6)
+                    if self._in_pool(0.3, y, 1.0):
+                        return side, (-1.4, y)
+                elif side == "right":
+                    y = r.uniform(0.7, self.SH - 0.6)
+                    if self._in_pool(self.SW - 0.3, y, 1.0):
+                        return side, (self.SW + 1.4, y)
+                else:
+                    x = r.uniform(0.6, self.SW - 0.6)
+                    if self._in_pool(x, self.SH - 0.3, 1.0):
+                        return side, (x, self.SH + 1.4)
+        return "bottom", (self.SW * 0.5, self.SH + 1.4)
 
     def _spot(self, margin=0.9):
         """A random spot in the visible water."""
@@ -313,7 +457,8 @@ class Scene(BaseScene):
         if kind == "laps":
             x = self.lane_x + r.choice([-0.5, 0.5])
             start = (x, self.SH + 1.4)
-            plan = [("swim", (x, self._wall_y(x) + 0.55)), ("rest", r.uniform(2, 7)),
+            wy = self._wall_y(x)
+            plan = [("swim", (x, wy + 0.55 if wy > -2 else 0.8)), ("rest", r.uniform(2, 7)),
                     ("swim", (x + r.uniform(-0.2, 0.2), self.SH + 1.4))]
         else:
             side, start = self._side_point()
@@ -325,8 +470,14 @@ class Scene(BaseScene):
             elif kind == "noodle":
                 plan = [("swim", self._spot()), ("drift", r.uniform(35, 80)), ("leave", None)]
             elif kind == "wall":
-                x = r.uniform(0.5, self.edge_c[0] + self.edge_r - 0.3)
-                plan = [("swim", (x, self._wall_y(x) + 0.45)), ("rest", r.uniform(25, 55)), ("leave", None)]
+                spot = None
+                for _ in range(20):                            # a place along the wall that's in view
+                    x, y = self._push_to(*self._spot(0.5), 0.45)
+                    if 0.4 < x < self.SW - 0.4 and 0.4 < y < self.SH - 0.6 and abs(self._dist(x, y) - 0.45) < 0.05:
+                        spot = (x, y)
+                        break
+                plan = ([("swim", spot), ("rest", r.uniform(25, 55)), ("leave", None)] if spot else
+                        [("swim", self._spot()), ("float", r.uniform(30, 70)), ("leave", None)])
             else:
                 plan = [("chat", r.uniform(25, 50)), ("leave", None)]
         s = Swimmer(*start, 0.0, rng=r)
@@ -386,9 +537,7 @@ class Scene(BaseScene):
         mx = min(self.SW - 0.4, max(0.4, x / self.pxm))
         my = min(self.SH - 0.4, max(0.4, y / self.pxm))
         if not self._in_pool(mx, my, 0.45):                  # tapped the deck: the nearest water instead
-            dx, dy = mx - self.edge_c[0], my - self.edge_c[1]
-            k = (self.edge_r + 0.5) / max(math.hypot(dx, dy), 1e-6)
-            mx, my = self.edge_c[0] + dx * k, self.edge_c[1] + dy * k
+            mx, my = self._push_to(mx, my, 0.5)
         self.you.target = (mx, my)
         self.you.mode = "breast"
         self._poke(mx, my, 0.35)                              # a little plip where you tapped
@@ -396,6 +545,8 @@ class Scene(BaseScene):
     # ------------------------------------------------------------- update
     def update(self, dt):
         self.t += dt
+        if self._edge_key() != self.geom:                     # edge settings changed in the panel
+            self._geometry()
         p = self.p
         others = [s for s in self.swimmers if not s.you]
         self.next_arrival -= dt * p.busy
@@ -421,7 +572,13 @@ class Scene(BaseScene):
             dx, dy = tx - s.x, ty - s.y
             dist = math.hypot(dx, dy)
             turn = angle_to(s.a, math.atan2(dy, dx))
-            s.a += max(-1.0, min(1.0, turn)) * dt * 1.4
+            # steer like a swimmer: keep moving and curve round in an arc. The turn rate is capped
+            # by speed (a turning circle of TURN_R), and eases in and out.
+            cruise = (0.5 if s.mode == "breast" else 0.16) * pace
+            w_max = cruise / TURN_R
+            w_want = max(-w_max, min(w_max, turn * 1.2))
+            s.w += (w_want - s.w) * min(1.0, dt * 2.0)
+            s.a += s.w * dt
             fx, fy = s.f
             if s.mode == "breast":
                 s.phase = (s.phase + dt * pace / 2.3) % 1
@@ -439,7 +596,11 @@ class Scene(BaseScene):
                 if self.t - s.last_splash > 0.8:
                     self._poke(s.x - fx * 0.5, s.y - fy * 0.5, 0.2)
                     s.last_splash = self.t
-            v *= max(0.25, math.cos(turn)) * min(1.0, dist / 0.8 + 0.25)
+            # ease off when the target is close and off to the side, so the arc tightens onto it
+            # instead of circling round it
+            if dist < 2.2 * TURN_R and abs(turn) > 0.8:
+                v *= 0.45
+            v *= min(1.0, dist / 0.8 + 0.25)
             s.speed = v
             s.x += fx * v * dt
             s.y += fy * v * dt
@@ -459,6 +620,7 @@ class Scene(BaseScene):
                     self._next_task(s)
         else:
             s.speed = 0.0
+            s.w *= 0.9
             rate = {"tread": 0.55, "noodle": 0.35, "float": 0.18}.get(s.mode, 0.5)
             s.phase = (s.phase + dt * rate) % 1
             if s.mode == "float":                           # drift slowly, turn lazily
@@ -488,11 +650,8 @@ class Scene(BaseScene):
         return pt is not None and 0 <= pt[0] <= self.SW and pt[1] <= self.SH
 
     def _keep_in(self, s):
-        dx, dy = s.x - self.edge_c[0], s.y - self.edge_c[1]
-        d = max(math.hypot(dx, dy), 1e-6)
-        lim = self.edge_r + 0.32
-        if d < lim:                                         # stay off the wall
-            s.x, s.y = self.edge_c[0] + dx / d * lim, self.edge_c[1] + dy / d * lim
+        if float(self._dist(s.x, s.y)) < 0.32:               # stay off the wall
+            s.x, s.y = self._push_to(s.x, s.y, 0.32)
         s.y = max(0.3, s.y)
         if s.you:
             s.x = min(self.SW - 0.3, max(0.3, s.x))
@@ -675,7 +834,9 @@ class Scene(BaseScene):
         pr.set("u_time", self.t % 1000.0)
         pr.set("u_a", p.ambient, p.ripple, p.caustics, p.refraction)
         pr.set("u_b", p.tile_size, p.depth, p.glints, self.pxm)
-        pr.set("u_edge", self.edge_c[0], self.edge_c[1], self.edge_r, COPING)
+        shape, sides, size, rad = self.geom
+        pr.set("u_edge", shape, sides, size, rad)
+        pr.set("u_edge2", p.edge_type, 0.0, self.SW, 0.0)
         pr.set("u_misc", self.w, self.h, self.lane_x, self.lane_end)
         gl.draw_quad()
         if self.target:

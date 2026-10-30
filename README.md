@@ -55,10 +55,19 @@ bash tools/install_autostart.sh            # install, start now, and start at ev
 bash tools/install_autostart.sh --remove   # turn it off
 ```
 
-At boot the Pi shows the **last scene** you were looking at (and remembers the landscape flip).
-To change scene without a computer, **hold a finger still in any corner for two seconds**: the
-next scene starts and its name appears briefly. The control panel still works from a phone on
-the same Wi-Fi.
+At boot the Pi opens the **home screen**: a scrolling grid of vignettes with a preview of each.
+Tap one to open it (a yellow dot marks the one you had open last).
+
+Getting around without a computer: **hold a finger still against an edge for three seconds**
+(a little bar fills up after half a second, so you know it's counting):
+
+| Edge | Goes to |
+|---|---|
+| Top | The home screen |
+| Right | The next vignette |
+| Left | The previous vignette |
+
+The control panel still works from a phone on the same Wi-Fi ("Home" is at the top of its scene list).
 
 Handy commands: `sudo systemctl restart physics-display` (after `git pull`),
 `sudo systemctl stop physics-display`, and `journalctl -u physics-display -f` to see errors.

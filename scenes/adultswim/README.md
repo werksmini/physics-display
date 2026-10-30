@@ -2,7 +2,7 @@
 
 ![preview](preview.png)
 
-The sunlit pool, a little closer in, with people in it. The water is the same as "Sunlit pool": pale tiles, the lane line and its T, shifting caustic nets and sun glints. In the top corner the pool curves around a rounded stone-edged deck.
+The sunlit pool, a little closer in, with people in it. The water is the same as "Sunlit pool": pale tiles, the lane line and its T, shifting caustic nets and sun glints. In the top corner the pool curves around a rounded stone-edged deck. You can change the edge in the control panel.
 
 You're the swimmer in the **yellow cap**, treading water. **Tap anywhere in the water** and you swim there with a slow, head-up breaststroke, then tread again. Other swimmers drift in from off the left, right and bottom of the screen:
 
@@ -14,6 +14,26 @@ You're the swimmer in the **yellow cap**, treading water. **Tap anywhere in the 
 - someone drifts over to chat
 
 Then they drift off again.
+
+Swimmers steer like swimmers: given somewhere new to go, they keep moving and curve round in a gentle arc, rather than spinning on the spot. If the spot is close and off to the side, they slow down so the arc tightens onto it.
+
+## The pool edge
+
+Set it with the buttons in the control panel. Changes apply at once and the swimmers keep swimming.
+
+| Setting | Options |
+|---|---|
+| **Pool edge: where** | Top left, Top right (corners), Top, Left, Right (a straight side), or None (open water) |
+| **Pool edge: shape** (corners) | **Curved deck:** the deck bulges into the pool and the pool wraps round it. **Rounded corner:** an ordinary pool corner with rounded inside. **Square corner.** **Diagonal:** a corner cut off at 45° |
+| **Pool edge: type** | **Stone:** bullnose coping. **Tile:** a band of blue mosaic. **Gutter:** an overflow channel with a steel grate. **Wood deck:** boards right to the water |
+| **Deck size** | How far the deck reaches into view, in metres |
+| **Corner radius** | How round a rounded corner is; for the curved deck, smaller makes a rounder bulge |
+
+Under the hood the edge is one "distance to the wall" function. It's positive in the water and negative on the deck, written twice: once in the shader for drawing, once in Python. Everything else follows from it:
+- the wave simulation's walls
+- where swimmers can enter
+- where the lane line ends
+- keeping swimmers off the wall
 
 ```bash
 python run.py adultswim --gpu

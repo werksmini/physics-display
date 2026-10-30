@@ -28,6 +28,11 @@ class Param:
     label: str = ""
     reset: bool = False      # changing it rebuilds the scene (calls setup again)
     help: str = ""
+    choices: tuple = ()      # named options: the value is the index (shown as buttons in the panel)
+
+    def __post_init__(self):
+        if self.choices:
+            self.min, self.max, self.step = 0, len(self.choices) - 1, 1
 
     def clamp(self, v):
         v = max(self.min, min(self.max, float(v)))
@@ -38,7 +43,8 @@ class Param:
     def to_json(self):
         return {"name": self.name, "label": self.label or self.name,
                 "min": self.min, "max": self.max, "step": self.step,
-                "default": self.default, "reset": self.reset, "help": self.help}
+                "default": self.default, "reset": self.reset, "help": self.help,
+                "choices": list(self.choices)}
 
 
 class Values:
