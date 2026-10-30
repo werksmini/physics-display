@@ -15,5 +15,6 @@ Regenerate previews and this page with `python tools/make_previews.py`.
 | ![meadowtouch](meadowtouch/preview.png) | **[Meadow, hands in the grass](meadowtouch/README.md)**<br>`python run.py meadowtouch`<br>A meadow seen from directly above that you can run your hand through |
 | ![particlelife](particlelife/preview.png) | **[Particle life](particlelife/README.md)**<br>`python run.py particlelife`<br>Particle life: coloured particles that chase and flee each other by type |
 | ![sand](sand/preview.png) | **[Falling sand](sand/README.md)**<br>`python run.py sand`<br>Falling sand: pour sand, water and stone and watch them pile, flow and settle |
+| ![scratchoff](scratchoff/preview.png) | **[Scratch-off at the corner store](scratchoff/README.md)**<br>`python run.py scratchoff`<br>Scratch-off tickets at the corner store: how many cards before you go bust? |
 | ![tallgrass](tallgrass/preview.png) | **[Barley field](tallgrass/README.md)**<br>`python run.py tallgrass`<br>A barley field in the wind, seen from eye level; run your finger through it |
 | ![window](window/preview.png) | **[Foggy car window](window/README.md)**<br>`python run.py window`<br>A foggy car window on a damp day in mountain farm country: wipe it to see out |
