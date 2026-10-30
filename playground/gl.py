@@ -23,6 +23,7 @@ GL_UNSIGNED_BYTE = 0x1401
 GL_TRIANGLE_STRIP = 0x0005
 GL_ARRAY_BUFFER = 0x8892
 GL_STATIC_DRAW = 0x88E4
+GL_DYNAMIC_DRAW = 0x88E8
 GL_FRAGMENT_SHADER = 0x8B30
 GL_VERTEX_SHADER = 0x8B31
 GL_COMPILE_STATUS = 0x8B81
@@ -462,6 +463,15 @@ class Program:
 class Mesh:
     def __init__(self, gl, buf, layout, count):
         self.gl, self.buf, self.layout, self.count = gl, buf, layout, count
+
+    def update(self, data):
+        """Replace the vertices (same layout), e.g. every frame for cloth."""
+        import numpy as np
+        arr = np.ascontiguousarray(np.asarray(data, np.float32).ravel())
+        r = self.gl.raw
+        r.glBindBuffer(GL_ARRAY_BUFFER, self.buf)
+        r.glBufferData(GL_ARRAY_BUFFER, arr.nbytes, arr.ctypes.data_as(ctypes.c_void_p), GL_DYNAMIC_DRAW)
+        self.count = len(arr) // sum(self.layout)
 
     def draw(self):
         """Draw with the program in use (its attribs must follow this mesh's layout)."""
