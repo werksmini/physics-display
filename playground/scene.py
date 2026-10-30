@@ -79,3 +79,7 @@ class BaseScene:
 
     def touch(self, kind, x, y):
         pass
+
+    # Optional, for multi-touch: define
+    #     def fingers(self, fingers): ...
+    # and the runner calls it every frame with {finger id: (x, y)} for every finger down.

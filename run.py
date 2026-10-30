@@ -320,6 +320,7 @@ def main():
 
     acc = 0.0
     dragging = False
+    mouse_finger = None
     try:
         while True:
             acc += min(clock.tick(60) / 1000, STEP * MAX_STEPS)
@@ -368,6 +369,15 @@ def main():
             for kind, x, y in events:
                 corner.feed(kind, x, y, now)        # raw panel coordinates
                 scene.touch(kind, *stage.map_touch(x, y, ctrl.flip_landscape))
+                if kind == "down":
+                    mouse_finger = (x, y)
+                elif kind == "move" and mouse_finger:
+                    mouse_finger = (x, y)
+                elif kind == "up":
+                    mouse_finger = None
+            if hasattr(scene, "fingers"):           # multi-touch scenes get every finger, every frame
+                raw = touch.fingers if touch else ({0: mouse_finger} if mouse_finger else {})
+                scene.fingers({k: stage.map_touch(x, y, ctrl.flip_landscape) for k, (x, y) in raw.items()})
 
             # fixed-step update, then draw
             while acc >= STEP:
@@ -378,6 +388,7 @@ def main():
             if stage.gpu_scene:
                 stage.gl.screen()
                 scene.draw_gl(stage.gl)
+                stage.gl.reset_state()
                 overlays = [(fps_img, (4, 4))] if fps_img else []
                 b = banner.image(now)
                 if b:

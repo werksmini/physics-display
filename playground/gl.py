@@ -50,6 +50,16 @@ GL_UNPACK_ALIGNMENT = 0x0CF5
 GL_PACK_ALIGNMENT = 0x0D05
 GL_VENDOR, GL_RENDERER, GL_VERSION = 0x1F00, 0x1F01, 0x1F02
 GL_MAX_FRAGMENT_UNIFORM_VECTORS = 0x8DFD
+GL_TRIANGLES = 0x0004
+GL_DEPTH_TEST = 0x0B71
+GL_STENCIL_TEST = 0x0B90
+GL_CULL_FACE = 0x0B44
+GL_BACK = 0x0405
+GL_LESS, GL_EQUAL, GL_LEQUAL = 0x0201, 0x0202, 0x0203
+GL_KEEP, GL_INCR = 0x1E00, 0x1E02
+GL_DEPTH_BUFFER_BIT = 0x0100
+GL_STENCIL_BUFFER_BIT = 0x0400
+MAX_ATTRIBS = 4
 
 PRECISION = """
 #ifdef GL_FRAGMENT_PRECISION_HIGH
@@ -139,6 +149,16 @@ def _load():
         "glFramebufferTexture2D": (None, [ctypes.c_uint, ctypes.c_uint, ctypes.c_uint, ctypes.c_uint, ctypes.c_int]),
         "glCheckFramebufferStatus": (ctypes.c_uint, [ctypes.c_uint]),
         "glReadPixels": (None, [ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_uint, ctypes.c_uint, ctypes.c_void_p]),
+        "glDisableVertexAttribArray": (None, [ctypes.c_uint]),
+        "glUniformMatrix4fv": (None, [ctypes.c_int, ctypes.c_int, ctypes.c_ubyte, ctypes.POINTER(ctypes.c_float)]),
+        "glUniform3fv": (None, [ctypes.c_int, ctypes.c_int, ctypes.POINTER(ctypes.c_float)]),
+        "glDepthFunc": (None, [ctypes.c_uint]),
+        "glDepthMask": (None, [ctypes.c_ubyte]),
+        "glClearDepthf": (None, [ctypes.c_float]),
+        "glClearStencil": (None, [ctypes.c_int]),
+        "glStencilFunc": (None, [ctypes.c_uint, ctypes.c_int, ctypes.c_uint]),
+        "glStencilOp": (None, [ctypes.c_uint, ctypes.c_uint, ctypes.c_uint]),
+        "glCullFace": (None, [ctypes.c_uint]),
     }
     for name, (res, args) in sig.items():
         f = getattr(_lib, name)
@@ -152,6 +172,8 @@ def request_es2_context():
     pygame.display.gl_set_attribute(pygame.GL_CONTEXT_MAJOR_VERSION, 2)
     pygame.display.gl_set_attribute(pygame.GL_CONTEXT_MINOR_VERSION, 0)
     pygame.display.gl_set_attribute(pygame.GL_DOUBLEBUFFER, 1)
+    pygame.display.gl_set_attribute(pygame.GL_DEPTH_SIZE, 16)       # for 3D scenes
+    pygame.display.gl_set_attribute(pygame.GL_STENCIL_SIZE, 8)      # for clean shadows
 
 
 class GL:
@@ -208,15 +230,18 @@ class GL:
                                + " shader failed to compile:\n" + log.value.decode(errors="replace"))
         return sh
 
-    def program(self, frag_src, vert_src=QUAD_VS):
-        """Compile a program. The fragment shader gets the precision block added."""
+    def program(self, frag_src, vert_src=QUAD_VS, attribs=("a_pos",)):
+        """Compile a program. The fragment shader gets the precision block added.
+        `attribs` are the vertex attribute names, bound to locations 0, 1, 2... in order
+        (they must match the layout of the mesh drawn with it)."""
         r = self.raw
         vs = self._compile(GL_VERTEX_SHADER, vert_src)
         fs = self._compile(GL_FRAGMENT_SHADER, PRECISION + frag_src)
         prog = r.glCreateProgram()
         r.glAttachShader(prog, vs)
         r.glAttachShader(prog, fs)
-        r.glBindAttribLocation(prog, 0, b"a_pos")
+        for i, name in enumerate(attribs):
+            r.glBindAttribLocation(prog, i, name.encode())
         r.glLinkProgram(prog)
         ok = ctypes.c_int()
         r.glGetProgramiv(prog, GL_LINK_STATUS, ctypes.byref(ok))
@@ -234,7 +259,71 @@ class GL:
         r.glBindBuffer(GL_ARRAY_BUFFER, self.quad_buf)
         r.glVertexAttribPointer(0, 2, GL_FLOAT, 0, 0, None)
         r.glEnableVertexAttribArray(0)
+        for i in range(1, MAX_ATTRIBS):
+            r.glDisableVertexAttribArray(i)
         r.glDrawArrays(GL_TRIANGLE_STRIP, 0, 4)
+
+    def mesh(self, data, layout):
+        """A triangle mesh. data: flat list/array of floats, interleaved per vertex;
+        layout: component counts per attribute, e.g. (3, 3, 1) for position, normal, face."""
+        import numpy as np
+        arr = np.ascontiguousarray(np.asarray(data, np.float32).ravel())
+        r = self.raw
+        buf = ctypes.c_uint()
+        r.glGenBuffers(1, ctypes.byref(buf))
+        r.glBindBuffer(GL_ARRAY_BUFFER, buf)
+        r.glBufferData(GL_ARRAY_BUFFER, arr.nbytes, arr.ctypes.data_as(ctypes.c_void_p), GL_STATIC_DRAW)
+        return Mesh(self, buf.value, tuple(layout), len(arr) // sum(layout))
+
+    # ------------------------------------------------------------ 3D state
+    def depth(self, on=True, write=True, func=GL_LEQUAL):
+        r = self.raw
+        (r.glEnable if on else r.glDisable)(GL_DEPTH_TEST)
+        r.glDepthFunc(func)
+        r.glDepthMask(1 if write else 0)
+
+    def cull(self, on=True):
+        r = self.raw
+        if on:
+            r.glEnable(GL_CULL_FACE)
+            r.glCullFace(GL_BACK)
+        else:
+            r.glDisable(GL_CULL_FACE)
+
+    def blend(self, on=True):
+        r = self.raw
+        if on:
+            r.glEnable(GL_BLEND)
+            r.glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+        else:
+            r.glDisable(GL_BLEND)
+
+    def stencil_once(self, on=True):
+        """While on, each pixel can be drawn only once (until the stencil is cleared):
+        overlapping shadow triangles don't darken twice."""
+        r = self.raw
+        if on:
+            r.glEnable(GL_STENCIL_TEST)
+            r.glStencilFunc(GL_EQUAL, 0, 0xFF)
+            r.glStencilOp(GL_KEEP, GL_KEEP, GL_INCR)
+        else:
+            r.glDisable(GL_STENCIL_TEST)
+
+    def clear_3d(self, r=0.0, g=0.0, b=0.0):
+        """Clear colour, depth and stencil."""
+        raw = self.raw
+        raw.glClearColor(r, g, b, 1.0)
+        raw.glClearDepthf(1.0)
+        raw.glClearStencil(0)
+        raw.glDepthMask(1)
+        raw.glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT)
+
+    def reset_state(self):
+        """Back to plain 2D drawing (used before overlays)."""
+        self.depth(False)
+        self.cull(False)
+        self.blend(False)
+        self.stencil_once(False)
 
     def viewport(self, x, y, w, h):
         self.raw.glViewport(x, y, w, h)
@@ -348,12 +437,45 @@ class Program:
         if loc >= 0:
             self.gl.raw.glUniform1i(loc, int(v))
 
+    def set_mat4(self, name, m):
+        """m: a 4x4 numpy matrix in the usual maths (row-major) layout."""
+        loc = self.loc(name)
+        if loc >= 0:
+            import numpy as np
+            flat = np.ascontiguousarray(np.asarray(m, np.float32).T).ravel()   # GL wants column-major
+            self.gl.raw.glUniformMatrix4fv(loc, 1, 0, flat.ctypes.data_as(ctypes.POINTER(ctypes.c_float)))
+
+    def set_vec3_array(self, name, values):
+        loc = self.loc(name)
+        if loc >= 0:
+            arr = (ctypes.c_float * len(values))(*values)
+            self.gl.raw.glUniform3fv(loc, len(values) // 3, arr)
+
     def set_vec4_array(self, name, values):
         """values: flat list of 4*n floats."""
         loc = self.loc(name)
         if loc >= 0:
             arr = (ctypes.c_float * len(values))(*values)
             self.gl.raw.glUniform4fv(loc, len(values) // 4, arr)
+
+
+class Mesh:
+    def __init__(self, gl, buf, layout, count):
+        self.gl, self.buf, self.layout, self.count = gl, buf, layout, count
+
+    def draw(self):
+        """Draw with the program in use (its attribs must follow this mesh's layout)."""
+        r = self.gl.raw
+        r.glBindBuffer(GL_ARRAY_BUFFER, self.buf)
+        stride, off = sum(self.layout) * 4, 0
+        for i in range(MAX_ATTRIBS):
+            if i < len(self.layout):
+                r.glVertexAttribPointer(i, self.layout[i], GL_FLOAT, 0, stride, ctypes.c_void_p(off))
+                r.glEnableVertexAttribArray(i)
+                off += self.layout[i] * 4
+            else:
+                r.glDisableVertexAttribArray(i)
+        r.glDrawArrays(GL_TRIANGLES, 0, self.count)
 
 
 class Texture:
