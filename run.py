@@ -128,6 +128,16 @@ def _stop_on_signal(signum, frame):
     raise KeyboardInterrupt          # run the normal clean-up (clear screen, free the port)
 
 
+def mem_report():
+    """Free memory, including the CMA pool the Pi's GPU allocates from."""
+    try:
+        info = dict(line.split(":", 1) for line in open("/proc/meminfo"))
+        get = lambda k: int(info[k].split()[0]) // 1024 if k in info else -1
+        return f"MemAvailable {get('MemAvailable')} MB, CmaFree {get('CmaFree')} of {get('CmaTotal')} MB"
+    except OSError:
+        return "meminfo unavailable"
+
+
 class EdgeHold:
     """Getting around with no computer: hold a finger still against an edge.
     Top edge: home screen. Right edge: next vignette. Left edge: previous.
@@ -267,7 +277,23 @@ class Stage:
 
 
 def build_scene(ctrl, name, stage, switching, menu=None, last=None):
-    """Import (or re-import, picking up code edits) and construct a scene."""
+    """Import (or re-import, picking up code edits) and construct a scene. On the GPU, the
+    previous scene's textures, buffers and shaders are freed once the new one is built."""
+    gl = stage.gl
+    if gl is None:
+        return _build_scene(ctrl, name, stage, switching, menu, last)
+    old = gl.begin_owner()
+    try:
+        scene = _build_scene(ctrl, name, stage, switching, menu, last)
+    except Exception:
+        gl.free(gl.owned)                    # the new scene failed: drop its half-made objects
+        gl.owned = old
+        raise
+    gl.free(old)
+    return scene
+
+
+def _build_scene(ctrl, name, stage, switching, menu=None, last=None):
     if name == HOME:                        # the home screen: drawn on the GPU when there is one
         ctrl.load_scene(HOME, Launcher)
         stage.configure(False, stage.gl is not None)
@@ -356,11 +382,19 @@ def main():
     flip_seen = ctrl.flip_landscape
 
     acc = 0.0
+    timing = {}
     dragging = False
     mouse_finger = None
     try:
         while True:
-            acc += min(clock.tick(60) / 1000, STEP * MAX_STEPS)
+            frame_ms = clock.tick(60)
+            acc += min(frame_ms / 1000, STEP * MAX_STEPS)
+            if frame_ms > 400 and timing:          # a stall: say where the time went (see journalctl)
+                print(f"[slow frame] {frame_ms} ms in '{ctrl.scene_name}': " +
+                      ", ".join(f"{k} {v:.0f} ms" for k, v in timing.items()) + f"; {mem_report()}",
+                      flush=True)
+            timing = {}
+            t_mark = time.perf_counter()
             if ctrl.quit_requested:                # another copy took over, or Stop in the panel
                 print("Stopping (requested from the control panel or a new run).")
                 return
@@ -426,14 +460,20 @@ def main():
                 scene.fingers({k: stage.map_touch(x, y, ctrl.flip_landscape) for k, (x, y) in raw.items()})
 
             # fixed-step update, then draw
+            timing["input"] = (time.perf_counter() - t_mark) * 1000
+            t_mark = time.perf_counter()
             while acc >= STEP:
                 scene.update(STEP)
                 acc -= STEP
+            timing["update"] = (time.perf_counter() - t_mark) * 1000
+            t_mark = time.perf_counter()
             if getattr(scene, "launch", None):      # the home screen picked a vignette
                 ctrl.request_scene(scene.launch)
                 scene.launch = None
-            fps_img = font.render(f"{clock.get_fps():3.0f} fps", True, (230, 230, 230), (0, 0, 0)) \
-                if ctrl.show_fps else None
+            fps_img = None
+            if ctrl.show_fps:                          # fixed size: its GPU texture is reused every frame
+                fps_img = pygame.Surface((64, 20))
+                fps_img.blit(font.render(f"{clock.get_fps():3.0f} fps", True, (230, 230, 230)), (4, 3))
             if stage.gpu_scene:
                 stage.gl.screen()
                 scene.draw_gl(stage.gl)
@@ -445,7 +485,10 @@ def main():
                 ind = edges.indicator(*stage.size, now)
                 if ind:
                     overlays.append(ind)
+                timing["draw"] = (time.perf_counter() - t_mark) * 1000
+                t_mark = time.perf_counter()
                 stage.present_gl(overlays)
+                timing["present"] = (time.perf_counter() - t_mark) * 1000
             else:
                 canvas = stage.canvas
                 scene.draw(canvas)

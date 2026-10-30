@@ -160,6 +160,9 @@ def _load():
         "glStencilFunc": (None, [ctypes.c_uint, ctypes.c_int, ctypes.c_uint]),
         "glStencilOp": (None, [ctypes.c_uint, ctypes.c_uint, ctypes.c_uint]),
         "glCullFace": (None, [ctypes.c_uint]),
+        "glDeleteBuffers": (None, [ctypes.c_int, c_uint_p]),
+        "glDeleteFramebuffers": (None, [ctypes.c_int, c_uint_p]),
+        "glDeleteProgram": (None, [ctypes.c_uint]),
     }
     for name, (res, args) in sig.items():
         f = getattr(_lib, name)
@@ -197,9 +200,10 @@ class GL:
             uniform int rot;          // 0 = as is, 1 = canvas turned counter-clockwise, 2 = clockwise
             uniform float alpha;
             uniform float flip;       // 1.0 for render-target textures (stored bottom row first)
+            uniform vec4 src;         // the part of the texture to show: offset xy, size zw (for clipping)
             varying vec2 uv;
             void main() {
-                vec2 t = uv;
+                vec2 t = src.xy + uv * src.zw;
                 if (rot == 1) t = vec2(1.0 - uv.y, uv.x);
                 else if (rot == 2) t = vec2(uv.y, 1.0 - uv.x);
                 if (flip > 0.5) t.y = 1.0 - t.y;
@@ -207,6 +211,33 @@ class GL:
                 gl_FragColor = vec4(c.rgb, c.a * alpha);
             }""")
         self._tex_cache = {}
+        self.owned = []            # GPU objects made since begin_owner(): freed when the scene goes
+
+    # ------------------------------------------------------------ cleanup
+    # Every texture, buffer, render target and program a scene makes is recorded, so the
+    # runner can free them all when it switches scene. Without this, GPU memory (shared
+    # with the CPU on the Pi) fills up a little more with every switch.
+    def begin_owner(self):
+        """Start recording into a fresh list; returns the previous one."""
+        old, self.owned = self.owned, []
+        return old
+
+    def free(self, objs):
+        r = self.raw
+        dead = set()
+        for kind, oid in objs:
+            h = ctypes.c_uint(oid)
+            if kind == "tex":
+                r.glDeleteTextures(1, ctypes.byref(h))
+                dead.add(oid)
+            elif kind == "buf":
+                r.glDeleteBuffers(1, ctypes.byref(h))
+            elif kind == "fb":
+                r.glDeleteFramebuffers(1, ctypes.byref(h))
+            elif kind == "prog":
+                r.glDeleteProgram(oid)
+        for k in [k for k, t in self._tex_cache.items() if t.id in dead]:
+            del self._tex_cache[k]
 
     def info(self):
         r = self.raw
@@ -252,6 +283,8 @@ class GL:
             raise RuntimeError("shader program failed to link:\n" + log.value.decode(errors="replace"))
         r.glDeleteShader(vs)
         r.glDeleteShader(fs)
+        if hasattr(self, "owned"):                 # (the built-in blit program is kept for good)
+            self.owned.append(("prog", prog))
         return Program(self, prog)
 
     # ------------------------------------------------------------ drawing
@@ -274,6 +307,7 @@ class GL:
         r.glGenBuffers(1, ctypes.byref(buf))
         r.glBindBuffer(GL_ARRAY_BUFFER, buf)
         r.glBufferData(GL_ARRAY_BUFFER, arr.nbytes, arr.ctypes.data_as(ctypes.c_void_p), GL_STATIC_DRAW)
+        self.owned.append(("buf", buf.value))
         return Mesh(self, buf.value, tuple(layout), len(arr) // sum(layout))
 
     # ------------------------------------------------------------ 3D state
@@ -349,6 +383,7 @@ class GL:
                      (GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE), (GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)):
             r.glTexParameteri(GL_TEXTURE_2D, p, v)
         r.glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, data)
+        self.owned.append(("tex", t.value))
         return Texture(self, t.value, w, h)
 
     def surface_texture(self, surf, key=None, smooth=True):
@@ -356,7 +391,12 @@ class GL:
         w, h = surf.get_size()
         data = pygame.image.tobytes(surf, "RGBA")
         tex = self._tex_cache.get(key) if key else None
+        if tex is not None and ("tex", tex.id) not in self.owned:
+            tex = None                            # belongs to the scene being replaced: make a fresh one
         if tex is None or (tex.w, tex.h) != (w, h):
+            if tex is not None:                   # a new size: free the old texture, don't leak it
+                self.free([("tex", tex.id)])
+                self.owned = [o for o in self.owned if o != ("tex", tex.id)]
             tex = self.texture(w, h, data, smooth)
             if key:
                 self._tex_cache[key] = tex
@@ -373,19 +413,30 @@ class GL:
         p = self._blit
         p.use()
         tex.bind(0)
-        p.set("tex", 0)
+        p.set_int("tex", 0)
         p.set_int("rot", rot)
         p.set("alpha", alpha)
         p.set("flip", 1.0 if tex.flipped else 0.0)
+        p.set("src", *getattr(self, "_src", (0.0, 0.0, 1.0, 1.0)))
         self.draw_quad()
         if blend:
             r.glDisable(GL_BLEND)
 
     def blit_at(self, tex, x, y, rot=0, alpha=1.0):
-        """Draw a texture at screen pixel (x, y), top-left origin, with blending."""
+        """Draw a texture at screen pixel (x, y), top-left origin, with blending.
+
+        Anything hanging off the screen is clipped here first: the Pi's GPU can stall
+        badly when asked to draw with a viewport that extends past the screen."""
         w, h = (tex.h, tex.w) if rot else (tex.w, tex.h)
-        self.raw.glViewport(int(x), int(self.height - y - h), int(w), int(h))
+        x, y = int(round(x)), int(round(y))
+        x0, y0 = max(x, 0), max(y, 0)
+        x1, y1 = min(x + w, self.width), min(y + h, self.height)
+        if x1 <= x0 or y1 <= y0:
+            return                                     # entirely off screen
+        self._src = ((x0 - x) / w, (y0 - y) / h, (x1 - x0) / w, (y1 - y0) / h)
+        self.raw.glViewport(x0, self.height - y1, x1 - x0, y1 - y0)
         self.blit(tex, rot, alpha, blend=True)
+        self._src = (0.0, 0.0, 1.0, 1.0)
         self.raw.glViewport(0, 0, self.width, self.height)
 
     def target(self, w, h, smooth=True):
@@ -400,6 +451,7 @@ class GL:
         r.glBindFramebuffer(GL_FRAMEBUFFER, 0)
         if status != GL_FRAMEBUFFER_COMPLETE:
             raise RuntimeError(f"render target {w}x{h} incomplete (0x{status:x})")
+        self.owned.append(("fb", fb.value))
         tex.flipped = True
         return Target(self, fb.value, tex)
 
