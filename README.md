@@ -7,7 +7,8 @@ Notes, setup guides and research live in the Notion workspace ("Physics Display 
 ## Layout
 
 - `run.py` – runs a scene and serves its control panel
-- `scenes/` – **the scene collection**, one folder per scene; see the [gallery](scenes/README.md)
+- `scenes/` – **the scene collection**, one folder per scene; see the [gallery](scenes/README.md).
+  The older CPU-drawn scenes are retired to `scenes/_cpu/`: off the menu, but `python run.py grass` still runs them
 - `playground/` – the engine: scene loader, touch + framebuffer drivers, web control panel
 - `tools/make_previews.py` – regenerates each scene's `preview.png` and the gallery
 - `demos/` – earlier standalone experiments
@@ -16,8 +17,8 @@ Notes, setup guides and research live in the Notion workspace ("Physics Display 
 ## Playground
 
 ```bash
-python run.py grass            # on the Pi (fullscreen on the panel)
-python run.py grass --window   # on the laptop (mouse acts as touch)
+python run.py pool            # on the Pi (fullscreen on the panel)
+python run.py grass --window  # on the laptop (mouse acts as touch; CPU scenes only)
 python run.py --list           # available scenes
 ```
 

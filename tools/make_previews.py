@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import pygame  # noqa: E402
 
 from playground.control import Controller  # noqa: E402
-from playground.loader import SCENES_DIR, list_scenes, load_module, preset_path  # noqa: E402
+from playground.loader import SCENES_DIR, list_scenes, load_module, preset_path, scene_dir  # noqa: E402
 from playground.scene import Values  # noqa: E402
 
 W, H = 480, 640
@@ -68,31 +68,38 @@ def render(name):
     else:
         surf = pygame.Surface((w, h))
         scene.draw(surf)
-    out = SCENES_DIR / name / "preview.png"
+    out = scene_dir(name) / "preview.png"
     pygame.image.save(pygame.transform.smoothscale(surf, (w // 2, h // 2)), str(out))
     return mod
 
 
-def gallery(mods):
-    rows = []
-    for name, mod in mods.items():
-        title = getattr(mod.Scene, "TITLE", name)
-        rows.append(f"| ![{name}]({name}/preview.png) | **[{title}]({name}/README.md)**<br>"
-                    f"`python run.py {name}`<br>{first_line(mod.__doc__)} |")
+def gallery(mods, retired=None):
+    def table(ms, prefix=""):
+        rows = []
+        for name, mod in ms.items():
+            title = getattr(mod.Scene, "TITLE", name)
+            rows.append(f"| ![{name}]({prefix}{name}/preview.png) | **[{title}]({prefix}{name}/README.md)**<br>"
+                        f"`python run.py {name}`<br>{first_line(mod.__doc__)} |")
+        return "| Preview | Scene |\n|---|---|\n" + "\n".join(rows) + "\n"
     text = ("# Scenes\n\nEach folder is one scene: `scene.py` (the code), `README.md` (what it is "
             "and how to play), `preset.json` (saved slider settings, if any) and `preview.png`.\n\n"
             "Regenerate previews and this page with `python tools/make_previews.py`.\n\n"
-            "| Preview | Scene |\n|---|---|\n" + "\n".join(rows) + "\n")
+            + table(mods))
+    if retired:
+        text += ("\n## Retired CPU scenes\n\nThe earlier scenes, drawn on the CPU. They're off the menu "
+                 "and the corner-hold cycle, but still run by name, e.g. `python run.py grass`.\n\n"
+                 + table(retired, "_cpu/"))
     (SCENES_DIR / "README.md").write_text(text)
 
 
 def main():
     pygame.init()
-    names = sys.argv[1:] or list(list_scenes())
+    names = sys.argv[1:] or list(list_scenes()) + list(list_scenes(retired=True))
     for n in names:
         render(n)
         print(f"preview: scenes/{n}/preview.png")
-    gallery({n: load_module(n) for n in list_scenes()})
+    gallery({n: load_module(n) for n in list_scenes()},
+            {n: load_module(n) for n in list_scenes(retired=True)})
     print("gallery: scenes/README.md")
 
 

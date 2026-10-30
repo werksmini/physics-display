@@ -27,7 +27,7 @@ import urllib.request
 import pygame
 
 from playground.control import Controller, start_server
-from playground.loader import list_scenes, load_module, preset_path
+from playground.loader import exists, list_scenes, load_module, preset_path
 from playground.scene import Values
 from playground import state
 from playground.touch import EvdevTouch
@@ -278,9 +278,11 @@ def main():
         return
     saved = state.load()
     if args.scene is None:
-        args.scene = saved.get("scene") if saved.get("scene") in available else "grass"
+        args.scene = saved.get("scene") if saved.get("scene") in available else "pool"
     if args.scene not in available:
-        sys.exit(f"unknown scene '{args.scene}'. Try: {', '.join(available)}")
+        if not exists(args.scene):
+            sys.exit(f"unknown scene '{args.scene}'. Try: {', '.join(available)}")
+        available[args.scene] = list_scenes(retired=True).get(args.scene, args.scene)   # retired, asked for by name
 
     window = args.window or not sys.platform.startswith("linux")
     signal.signal(signal.SIGTERM, _stop_on_signal)
@@ -308,9 +310,10 @@ def main():
     stage = Stage(screen, fb, window, gl)
     try:
         scene = build_scene(ctrl, args.scene, stage, switching=True)
-    except Exception as err:                     # e.g. last scene needs the GPU but we're on --fb
+    except Exception as err:                     # e.g. a GPU scene but no GPU (--fb): use a CPU scene
         print(f"Couldn't start '{args.scene}': {err}\nStarting 'grass' instead.")
         args.scene = "grass"
+        available.setdefault("grass", "Grass")
         scene = build_scene(ctrl, args.scene, stage, switching=True)
     state.save(scene=args.scene)
     corner = CornerHold(w, h)

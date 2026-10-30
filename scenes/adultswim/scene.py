@@ -1,27 +1,29 @@
-"""Adult swim: a quiet community pool at dusk, seen from above.
+"""Adult swim: the sunlit pool, a little closer in, with swimmers.
 
 You're the swimmer in the yellow cap, treading water. Tap anywhere in the
-pool and you swim there (slow, head-up breaststroke), then tread water again.
-Other swimmers wander in down the ladders: someone swims a few lazy lengths,
-someone floats on their back, someone hangs on a pool noodle. After a while
-they climb out and leave.
+water and you swim there (slow, head-up breaststroke), then tread again.
+Other swimmers drift in from the edges of the screen (left, right, below):
+someone swims up to the wall and back, someone floats on their back, someone
+hangs on a pool noodle, someone just passes through. Then they drift off.
+
+Same water as "Sunlit pool": tiles, lane line, caustic nets, sun glints. In
+the top corner is the curved edge of the pool, with stone coping and deck.
 
 How it's built (three layers):
 
-1. Water surface: a small wave simulation (a grid of heights, one cell per
-   5 screen pixels, the classic "wave equation" update). Swimmers poke it as
-   they move: hands on each stroke, a soft bow wave at the head, little
-   sculling ripples while treading. Ripples spread, bounce off the walls and
-   cross each other. The heights and their slopes go to the GPU as a texture.
-2. Bodies under the water: drawn each frame with simple shapes (capsules for
-   torso, arms and legs) into a half-resolution image, also a texture.
-3. The shader, per pixel: bends the view of the tiles and the bodies by the
-   surface slope (refraction), adds the bodies' soft shadows on the floor, the
-   glow of the underwater lights, the water's colour, the dusk sky reflected
-   at the surface and glints of the deck lamp on the ripples.
+1. Water surface: the sunlit pool's gentle wind waves, plus a small wave
+   simulation (a grid of heights, one cell per 5 screen pixels, the wave
+   equation). Swimmers poke it as they move: hands on each stroke, a bow wave
+   at the head, little sculling ripples while treading. Ripples spread, bounce
+   off the pool wall and fade away at the screen edges (the pool carries on
+   out of view). Slopes go to the GPU as a texture.
+2. Bodies under the water: drawn each frame with simple capsules into a
+   half-resolution image, also a texture.
+3. The shader, per pixel: the sunlit pool's floor, refraction, caustics and
+   glints, plus the bodies (bent by the surface, dappled by caustics), their
+   sun shadows on the floor, and the coping and deck around the curved edge.
 
-Heads are above the water, so they're drawn crisp on top, unbent. The deck,
-coping and ladders are painted once into an overlay with the pool cut out.
+Heads are above the water, so they're drawn crisp on top, unbent.
 """
 import math
 import random
@@ -31,13 +33,9 @@ import pygame
 
 from playground.scene import BaseScene, Param
 
-PXM = 55.0                                  # screen pixels per metre
 CELL = 5                                    # wave cell size in pixels
-POOL = (34, 46, 446, 594)                   # pool rectangle on screen (x0, y0, x1, y1)
-PW, PH = (POOL[2] - POOL[0]) / PXM, (POOL[3] - POOL[1]) / PXM     # pool size in metres
 BODY_SCALE = 0.5                            # body texture resolution vs screen
-LADDERS = [((PW - 0.25, 1.15), math.pi), ((0.25, PH - 1.3), 0.0)]   # inside the wall, facing out
-FOOT = 0.3048
+COPING = 0.30                               # stone edge width, metres
 
 SKIN = [(236, 196, 166), (208, 160, 120), (170, 118, 82), (122, 82, 56), (226, 178, 150), (96, 64, 44)]
 SUITS = [(28, 40, 86), (20, 20, 24), (120, 30, 46), (24, 104, 110), (70, 46, 96), (160, 60, 40)]
@@ -47,96 +45,121 @@ YOU_CAP = (246, 206, 60)
 NOODLES = [(240, 90, 150), (110, 220, 120), (250, 200, 60), (90, 170, 240)]
 
 FRAG = """
-uniform sampler2D u_wave;   // r, g: slope x, y   b: height
+uniform sampler2D u_wave;   // r, g: slope x, y from the wave simulation
 uniform sampler2D u_body;   // swimmers under the water (rgba)
-uniform vec4 u_pool;        // pool rectangle in pixels
-uniform vec4 u_look;        // refraction, pool lights, sky glow, deck lamp glints
-uniform vec4 u_misc;        // time, px per metre, screen w, screen h
+uniform float u_time;
+uniform vec4 u_a;           // ambient wave, ripple strength, caustics, refraction
+uniform vec4 u_b;           // tile size, depth tint, glints, px per metre
+uniform vec4 u_edge;        // the deck: a disc in the corner (centre x, y, radius in metres), coping width
+uniform vec4 u_misc;        // screen w, h (px), lane x, lane end y (metres)
 varying vec2 uv;
 
 float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
 
-float caustic(vec2 q, float t) {
-    vec2 a = q * 3.0;
-    float c = 0.0;
-    for (int i = 0; i < 2; i++) {
-        float fi = float(i);
-        a += vec2(sin(a.y * 1.3 + t * 0.35 + fi * 1.7), cos(a.x * 1.1 - t * 0.27 + fi * 2.3)) * 0.75;
-        c += 1.0 / (1.0 + 30.0 * abs(sin(a.x) * sin(a.y)));
-    }
-    return c * 0.5;
+float wave(vec2 p, vec2 d, float k, float w, float a, float ph, inout vec2 g) {
+    float x = dot(d, p) * k + u_time * w + ph;
+    g += d * (a * k * cos(x));
+    return a * sin(x);
 }
 
-vec3 lights(vec2 m, vec2 size) {
-    // two lamps in the long walls toward the deep end, one in the shallow end wall
-    vec2 l1 = vec2(0.0, size.y * 0.66), l2 = vec2(size.x, size.y * 0.66), l3 = vec2(size.x * 0.5, 0.0);
-    float g = exp(-dot(m - l1, m - l1) * 0.16) + exp(-dot(m - l2, m - l2) * 0.16)
-            + 0.6 * exp(-dot(m - l3, m - l3) * 0.22);
-    return vec3(0.75, 0.95, 1.0) * g;
+float caustic(vec2 q) {
+    vec2 a = q * 3.6;
+    float c = 0.0;
+    for (int i = 0; i < 3; i++) {
+        float fi = float(i);
+        a += vec2(sin(a.y * 1.3 + u_time * 0.7 + fi * 1.7),
+                  cos(a.x * 1.1 - u_time * 0.5 + fi * 2.3)) * 0.75;
+        c += 1.0 / (1.0 + 34.0 * abs(sin(a.x) * sin(a.y)));
+    }
+    return c / 3.0;
 }
 
 void main() {
-    float t = u_misc.x, pxm = u_misc.y;
-    vec2 px = uv * u_misc.zw;
-    vec2 size = (u_pool.zw - u_pool.xy) / pxm;           // pool in metres
-    vec2 puv = (px - u_pool.xy) / (u_pool.zw - u_pool.xy);
-    vec2 m = puv * size;                                  // metres from the shallow-end corner
+    vec2 px = uv * u_misc.xy;
+    vec2 p = px / u_b.w;                                   // metres
+    float d = length(p - u_edge.xy) - u_edge.z;            // >0 in the water, metres from the wall
+    vec3 L = normalize(vec3(0.35, -0.45, 0.82));           // toward the sun (up and to the right)
 
-    // ---- surface slope: the simulated ripples plus a whisper of breeze
-    vec4 wv = texture2D(u_wave, puv);
-    vec2 g = (wv.rg - 0.5) * 0.65;
-    g += vec2(cos(dot(m, vec2(2.1, 0.7)) + t * 0.9), cos(dot(m, vec2(-0.6, 2.6)) + t * 0.7)) * 0.012;
-    vec3 n = normalize(vec3(-g, 1.0));
+    if (d < 0.0) {
+        // ---- coping and deck, in the sun
+        vec2 rel = p - u_edge.xy;
+        float along = atan(rel.y, rel.x) * u_edge.z;
+        float c = -d / u_edge.w;                            // 0 at the water, 1 at the deck side
+        vec3 col;
+        if (c < 1.0) {
+            float round = sqrt(max(0.0, 1.0 - pow(1.0 - c * 1.6, 2.0)));       // bullnose profile
+            col = vec3(0.86, 0.83, 0.77) * (0.80 + 0.22 * round) * (0.95 + 0.06 * hash(floor(p * 60.0)));
+            float joint = abs(fract(along / 0.6) - 0.5) * 0.6;
+            col *= 1.0 - 0.18 * (1.0 - smoothstep(0.0, 0.012, joint));
+            col *= 1.0 - 0.25 * smoothstep(0.85, 1.0, c);                        // the joint to the deck
+        } else {
+            vec2 g2 = floor(px / 2.0);
+            col = vec3(0.80, 0.76, 0.69) * (0.92 + 0.10 * hash(g2) + 0.05 * hash(floor(p * 3.0)));
+            col *= 0.96 + 0.04 * sin(p.x * 1.3 + p.y * 0.7);
+        }
+        col *= 1.0 - 0.12 * smoothstep(0.02, 0.0, d + 0.0);                       // edge of the stone
+        col += (hash(gl_FragCoord.xy + fract(u_time) * 61.0) - 0.5) / 64.0;
+        gl_FragColor = vec4(col, 1.0);
+        return;
+    }
 
-    // ---- depth: 0.9 m at the shallow end to 1.8 m at the deep end
-    float depth = mix(0.9, 1.8, smoothstep(0.35, 0.8, puv.y));
+    // ---- height slope: ambient wind waves plus the simulated ripples
+    vec2 g = vec2(0.0);
+    float amb = u_a.x * 0.004;
+    wave(p, normalize(vec2(1.0, 0.35)), 9.0, 1.7, amb, 0.0, g);
+    wave(p, normalize(vec2(-0.4, 1.0)), 13.0, 2.1, amb * 0.7, 1.3, g);
+    wave(p, normalize(vec2(0.8, -0.6)), 21.0, 2.9, amb * 0.4, 2.1, g);
+    wave(p, normalize(vec2(-1.0, -0.2)), 31.0, 3.7, amb * 0.25, 0.4, g);
+    vec4 wv = texture2D(u_wave, uv);
+    g += (wv.rg - 0.5) * 0.30 * u_a.y;
+    vec3 n = normalize(vec3(-g * 1.6, 1.0));
 
-    // ---- the tiled floor, seen through the bent surface
-    vec2 q = m + n.xy * 0.35 * depth * u_look.x;
-    vec2 f = fract(q / 0.12);
-    float grout = smoothstep(0.0, 0.07, f.x) * smoothstep(1.0, 0.93, f.x)
-                * smoothstep(0.0, 0.07, f.y) * smoothstep(1.0, 0.93, f.y);
-    vec3 tile = vec3(0.70, 0.86, 0.90) * (0.94 + 0.06 * hash(floor(q / 0.12)));
-    vec3 floorc = mix(vec3(0.52, 0.66, 0.70), tile, grout);
-    float lx = min(abs(q.x - size.x * 0.33), abs(q.x - size.x * 0.67));
-    float lane = smoothstep(0.11, 0.09, lx) * step(0.9, q.y) * step(q.y, size.y - 0.9);
-    floorc = mix(floorc, vec3(0.07, 0.12, 0.30), lane);
-    float edge = min(min(q.x, size.x - q.x), min(q.y, size.y - q.y));
-    floorc *= 0.72 + 0.28 * smoothstep(0.0, 0.5, edge);  // the walls shade the floor beside them
+    // ---- refracted tile floor (exactly the sunlit pool's)
+    vec2 q = p + n.xy * 0.22 * u_a.w;
+    float ts = u_b.x;
+    vec2 cell = floor(q / ts);
+    vec2 f = fract(q / ts);
+    float grout = smoothstep(0.0, 0.045, f.x) * smoothstep(1.0, 0.955, f.x)
+                * smoothstep(0.0, 0.045, f.y) * smoothstep(1.0, 0.955, f.y);
+    vec3 tile = vec3(0.80, 0.93, 0.95) * (0.94 + 0.08 * hash(cell));
+    vec3 floorc = mix(vec3(0.60, 0.74, 0.78), tile, grout);
+    float lane = smoothstep(0.13, 0.11, abs(q.x - u_misc.z)) * step(u_misc.w, q.y);
+    float tee = smoothstep(0.13, 0.11, abs(q.y - u_misc.w)) * smoothstep(0.42, 0.40, abs(q.x - u_misc.z));
+    floorc = mix(floorc, vec3(0.08, 0.16, 0.36), max(lane, tee));
+    floorc *= 0.80 + 0.20 * smoothstep(0.0, 0.35, d);       // the wall shades the floor beside it
 
-    // swimmers' soft shadows on the floor (the deck lamp is up and to the left)
-    float sh = texture2D(u_body, puv + n.xy * 0.02 + vec2(0.018, 0.02) * depth).a;
-    vec3 glow = lights(q, size) * u_look.y;
-    float amb = 0.22 + 0.08 * u_look.z;
-    vec3 col = floorc * (amb * (1.0 - 0.35 * sh) + glow * (1.0 - 0.5 * sh) * 1.5);
-    col += floorc * caustic(q + n.xy * 0.3, t) * (0.06 + 0.18 * length(glow)) * u_look.y;
+    // ---- swimmers' sun shadows on the floor (sun up-right, so shadows fall down-left)
+    vec2 suv = uv + n.xy * 0.01 + vec2(0.38, -0.49) / (u_misc.xy / u_b.w);
+    vec2 bt = 2.0 / u_misc.xy;                               // one body-texture texel
+    float sh = 0.5 * (texture2D(u_body, suv + bt * vec2(1.2, 0.4)).a + texture2D(u_body, suv - bt * vec2(0.4, 1.2)).a);
 
-    // water between floor and eye: blue-green, deeper = darker
-    vec3 water = vec3(0.05, 0.30, 0.40) * (0.55 + 0.6 * length(glow)) + vec3(0.0, 0.04, 0.08) * u_look.z;
-    col = mix(col, water, clamp(0.32 + depth * 0.22, 0.0, 0.85));
+    // ---- caustic light on the floor
+    float c = caustic(q + n.xy * 0.15) * u_a.z;
+    vec3 col = floorc * (0.62 + 1.15 * c * (1.0 - 0.7 * sh)) * (1.0 - 0.38 * sh);
 
-    // ---- swimmers, nearer the surface: bent less, tinted less
-    vec4 b = texture2D(u_body, puv + n.xy * 0.018 * u_look.x);
-    vec3 bc = b.rgb * (0.62 + 0.10 * u_look.z + 0.7 * lights(m, size) * u_look.y);
-    bc = mix(bc, water * 1.3, 0.22);
-    col = mix(col, bc, b.a);
+    // ---- water: depth tint
+    vec3 water = vec3(0.30, 0.72, 0.82);
+    col = mix(col, col * water * 1.25, u_b.y);
 
-    // ---- the surface: dusk sky in the reflection, deck-lamp glints on ripples
-    float fres = 0.03 + 0.45 * pow(1.0 - n.z, 2.0);
-    vec3 sky = mix(vec3(0.20, 0.24, 0.42), vec3(0.62, 0.46, 0.52), clamp(n.y * 4.0 + 0.4, 0.0, 1.0));
-    col = mix(col, sky * u_look.z, fres);
-    vec3 V = vec3(0.0, 0.0, 1.0);
-    vec3 L = normalize(vec3(-0.55, -0.62, 0.56));
-    float spec = pow(max(dot(n, normalize(L + V)), 0.0), 900.0) * 1.1 * u_look.w;
-    col += vec3(1.0, 0.86, 0.62) * spec;
+    // ---- swimmers, nearer the surface: bent less, dappled by the light, lightly tinted
+    vec2 buv = uv + n.xy * 0.012 * u_a.w;                    // 4 taps: soft edges, like seen through water
+    vec4 b = 0.25 * (texture2D(u_body, buv + bt * vec2(0.6, 0.2)) + texture2D(u_body, buv - bt * vec2(0.6, 0.2))
+                   + texture2D(u_body, buv + bt * vec2(-0.2, 0.6)) + texture2D(u_body, buv - bt * vec2(-0.2, 0.6)));
+    if (b.a > 0.01) {
+        b.rgb *= 0.92 / b.a;                                   // undo the fade to black at the edges
+        vec3 bc = b.rgb * (0.78 + 0.55 * caustic(p * 1.3 + n.xy * 0.1) * u_a.z);
+        bc = mix(bc, bc * water * 1.3, 0.55 * u_b.y);
+        col = mix(col, bc, b.a);
+    }
 
-    // lamp housings in the walls
-    vec2 lp1 = vec2(0.04, size.y * 0.66), lp2 = vec2(size.x - 0.04, size.y * 0.66), lp3 = vec2(size.x * 0.5, 0.04);
-    float lamp = smoothstep(0.13, 0.05, length((m - lp1) * vec2(1.6, 1.0))) + smoothstep(0.13, 0.05, length((m - lp2) * vec2(1.6, 1.0)))
-               + smoothstep(0.11, 0.04, length((m - lp3) * vec2(1.0, 1.6)));
-    col = mix(col, vec3(0.92, 1.0, 1.0), lamp * clamp(u_look.y, 0.0, 1.0));
+    // ---- surface: sky reflection, sun glints
+    vec3 H = normalize(L + vec3(0.0, 0.0, 1.0));
+    float spec = pow(max(dot(n, H), 0.0), 900.0) * 2.5 * u_b.z;
+    float fres = 0.04 + 0.5 * pow(1.0 - n.z, 3.0);
+    col = mix(col, vec3(0.80, 0.90, 1.0), fres) + vec3(1.0, 0.97, 0.9) * spec;
+    col *= 1.0 - 0.22 * smoothstep(0.10, 0.0, d);           // the coping's lip shades the water under it
 
-    col += (hash(gl_FragCoord.xy + fract(t) * 61.0) - 0.5) / 72.0;     // dither
+    col += (hash(gl_FragCoord.xy + fract(u_time) * 61.0) - 0.5) / 64.0;   // dither
     gl_FragColor = vec4(col, 1.0);
 }
 """
@@ -158,11 +181,13 @@ class Swimmer:
         self.phase = rng.random()
         self.speed = 0.0
         self.target = None
-        self.alpha = 1.0 if you else 0.0
+        self.alpha = 1.0
         self.plan = []                  # queue of things to do (others)
+        self.task = None
         self.timer = 0.0
         self.leaving = False
         self.gone = False
+        self.noodler = False
         self.skin = SKIN[0] if you else rng.choice(SKIN)
         self.suit = SUITS[0] if you else rng.choice(SUITS)
         if you:
@@ -191,165 +216,157 @@ class Scene(BaseScene):
         Param("ripple", 1.0, 0, 3, 0.05, "Ripple strength"),
         Param("ripple_speed", 1.0, 0.4, 2, 0.05, "Ripple speed"),
         Param("ripple_fade", 1.0, 0.2, 3, 0.05, "Ripple fade"),
-        Param("lights", 1.0, 0, 2, 0.05, "Pool lights"),
-        Param("dusk", 1.0, 0, 2, 0.05, "Dusk sky"),
-        Param("glints", 1.0, 0, 3, 0.05, "Lamp glints"),
+        Param("ambient", 1.0, 0, 4, 0.05, "Wind on the water"),
+        Param("caustics", 1.0, 0, 3, 0.05, "Caustics"),
         Param("refraction", 1.0, 0, 3, 0.05, "Refraction"),
+        Param("glints", 1.0, 0, 3, 0.05, "Sun glints"),
+        Param("depth", 0.55, 0, 1, 0.01, "Water depth tint"),
+        Param("tile_size", 0.16, 0.05, 0.5, 0.01, "Tile size", help="Metres."),
+        Param("render_scale", 1.0, 0.25, 1.0, 0.05, "Render scale", reset=True,
+              help="Draw the water smaller and scale it up: faster on the Pi, a little softer."),
+        Param("view", 6.7, 4, 12, 0.1, "View height", reset=True,
+              help="Metres of pool from top to bottom of the screen. Smaller = closer."),
     ]
 
     # ------------------------------------------------------------------ setup
     def setup(self):
         gl = self.gl
         self.prog = gl.program(FRAG)
+        sc = self.p.render_scale
+        self.target = gl.target(max(16, int(self.w * sc)), max(16, int(self.h * sc))) if sc < 0.99 else None
         self.rng = random.Random()
-        self.gw = (POOL[2] - POOL[0]) // CELL
-        self.gh = (POOL[3] - POOL[1]) // CELL
+        self.pxm = self.h / self.p.view                  # pixels per metre
+        self.SW, self.SH = self.w / self.pxm, self.h / self.pxm
+        # the deck: a rounded corner in the top left; the pool curves around it and carries on
+        # off the left, right and bottom of the screen
+        self.edge_c = np.array([-0.5, -0.5])
+        R = self.edge_r = 2.6
+        self.lane_x = 1.15                              # where the sunlit pool's lane line is
+        self.lane_end = self._wall_y(self.lane_x) + 0.45
+
+        self.gw, self.gh = self.w // CELL, self.h // CELL
         self.hgt = np.zeros((self.gh, self.gw), np.float32)
         self.vel = np.zeros_like(self.hgt)
         self.pad = np.zeros((self.gh + 2, self.gw + 2), np.float32)
+        cy, cx = (np.mgrid[0:self.gh, 0:self.gw] + 0.5) * CELL / self.pxm
+        inside = (np.hypot(cx - self.edge_c[0], cy - self.edge_c[1]) > R).astype(np.float32)
+        ey, ex = np.mgrid[0:self.gh, 0:self.gw]
+        border = np.minimum(np.minimum(ex, self.gw - 1 - ex), np.minimum(ey, self.gh - 1 - ey))
+        sponge = 1.0 - 0.10 * np.clip(1.0 - border / 10.0, 0, 1) ** 2      # ripples fade off-screen
+        self.mask = inside
+        self.sponge = (sponge * inside).astype(np.float32)
         self.wbuf = np.full((self.gh, self.gw, 4), 128, np.uint8)
         self.wbuf[..., 3] = 255
         self.wave_tex = gl.texture(self.gw, self.gh, self.wbuf.tobytes())
-        bw = int((POOL[2] - POOL[0]) * BODY_SCALE)
-        bh = int((POOL[3] - POOL[1]) * BODY_SCALE)
+        bw, bh = int(self.w * BODY_SCALE), int(self.h * BODY_SCALE)
         self.body = pygame.Surface((bw, bh), pygame.SRCALPHA)
         self.body_tex = gl.texture(bw, bh)
-        self.bpm = PXM * BODY_SCALE                     # body-texture pixels per metre
+        self.bpm = self.pxm * BODY_SCALE                 # body-texture pixels per metre
         k = np.exp(-np.linspace(-1.6, 1.6, 5) ** 2)
         self.kernel = (k[:, None] * k[None, :]).astype(np.float32)
-        self.deck_tex = gl.surface_texture(self._paint_deck(), "adultswim_deck")
         self.font = pygame.font.Font(None, 24)
         self.t = 0.0
-        self.you = Swimmer(PW * 0.5, PH * 0.45, -math.pi / 2, you=True, rng=self.rng)
+        self.you = Swimmer(self.SW * 0.55, self.SH * 0.58, -math.pi / 2, you=True, rng=self.rng)
         self.swimmers = [self.you]
-        self.next_arrival = 4.0
-        self.marker = None                              # (x, y, time) of your last tap
-        first = self._arrive(0, already_in=True)
-        first.x, first.y = PW * 0.25, PH * 0.75
+        self.next_arrival = 5.0
+        first = Swimmer(self.SW * 0.24, self.SH * 0.80, 0.4, rng=self.rng)
+        first.plan = [("float", self.rng.uniform(30, 50)), ("leave", None)]
+        self.swimmers.append(first)
         self.taps = {}
 
-    # ------------------------------------------------------------- the deck
-    def _paint_deck(self):
-        w, h = self.w, self.h
-        rng = np.random.default_rng(7)
-        yy, xx = np.mgrid[0:h, 0:w]
-        noise = rng.normal(0, 1, (h, w))
-        base = np.array([108, 100, 92], float)
-        lamp = np.exp(-((xx + 60) ** 2 + (yy + 40) ** 2) / (2 * 320.0 ** 2))   # deck lamp, upper left
-        cool = np.array([0.62, 0.66, 0.80])
-        warm = np.array([1.12, 0.98, 0.80])
-        light = cool[None, None] + (warm - cool)[None, None] * lamp[..., None]
-        img = (base[None, None] * light * (1 + noise[..., None] * 0.035)).clip(0, 255)
-        surf = pygame.surfarray.make_surface(img.transpose(1, 0, 2).astype(np.uint8)).convert_alpha()
-        x0, y0, x1, y1 = POOL
-        cop = 9
-        stone = (176, 168, 156)
-        pygame.draw.rect(surf, stone, (x0 - cop, y0 - cop, x1 - x0 + 2 * cop, y1 - y0 + 2 * cop), border_radius=6)
-        for x in range(x0 - cop, x1 + cop, 22):                              # coping joints
-            pygame.draw.line(surf, (150, 142, 132), (x, y0 - cop), (x, y0 - 1))
-            pygame.draw.line(surf, (150, 142, 132), (x, y1), (x, y1 + cop))
-        for y in range(y0 - cop, y1 + cop, 22):
-            pygame.draw.line(surf, (150, 142, 132), (x0 - cop, y), (x0 - 1, y))
-            pygame.draw.line(surf, (150, 142, 132), (x1, y), (x1 + cop, y))
-        dim = pygame.Surface((w, h), pygame.SRCALPHA)                          # dusk on the coping too
-        dim.fill((40, 50, 90, 70))
-        surf.blit(dim, (0, 0))
-        small = pygame.font.Font(None, 17)
-        ink = (34, 52, 104)
-        for text, pos in (("3 FT", (x0 + 30, y0 - 26)), ("3 FT", (x1 - 62, y0 - 26)),
-                          ("5 FT", (x0 + 30, y1 + 14)), ("5 FT", (x1 - 62, y1 + 14)),
-                          ("NO DIVING", (w // 2 - 34, y0 - 26))):
-            surf.blit(small.render(text, True, ink), pos)
-        # a striped towel and some flip-flops
-        towel = pygame.Surface((70, 26), pygame.SRCALPHA)
-        for i in range(0, 70, 10):
-            pygame.draw.rect(towel, (172, 76, 70) if (i // 10) % 2 else (210, 196, 170), (i, 0, 10, 26))
-        towel = pygame.transform.rotate(towel, 8)
-        towel.fill((150, 150, 170, 255), special_flags=pygame.BLEND_RGBA_MULT)
-        surf.blit(towel, (w // 2 - 40, h - 40))
-        for dx, ang in ((0, 12), (12, -6)):
-            ff = pygame.Surface((10, 22), pygame.SRCALPHA)
-            pygame.draw.ellipse(ff, (60, 120, 170), ff.get_rect())
-            surf.blit(pygame.transform.rotate(ff, ang), (w // 2 + 70 + dx, h - 38))
-        # cut the pool out
-        pygame.draw.rect(surf, (0, 0, 0, 0), (x0, y0, x1 - x0, y1 - y0))
-        # ladders: rails curving from the deck into the water, rungs dim beneath
-        for (lx, ly), face in LADDERS:
-            sx = x0 + lx * PXM
-            sy = y0 + ly * PXM
-            wall = x1 if face == math.pi else x0
-            out = 1 if face == math.pi else -1
-            for dy in (-14, 14):
-                yy0 = sy + dy
-                pygame.draw.line(surf, (60, 64, 72), (wall + out * 16, yy0 + 2), (wall - out * 12, yy0 + 2), 4)
-                pygame.draw.line(surf, (214, 220, 228), (wall + out * 16, yy0), (wall - out * 12, yy0), 3)
-                pygame.draw.circle(surf, (230, 234, 240), (wall + out * 16, yy0), 3)
-            for k in range(3):
-                rx = wall - out * (5 + k * 7)
-                pygame.draw.line(surf, (200, 214, 220, 70 - k * 18), (rx, sy - 13), (rx, sy + 13), 3)
-        return surf
+    def _wall_y(self, x):
+        """y of the pool wall above x (metres); off the top of the screen past the deck."""
+        dx = x - self.edge_c[0]
+        if abs(dx) >= self.edge_r:
+            return -3.0
+        return self.edge_c[1] + math.sqrt(self.edge_r ** 2 - dx * dx)
+
+    def _in_pool(self, x, y, margin):
+        return math.hypot(x - self.edge_c[0], y - self.edge_c[1]) > self.edge_r + margin
+
+    def _offscreen(self, s, m=1.0):
+        return s.x < -m or s.x > self.SW + m or s.y > self.SH + m
+
+    def _side_point(self, side=None):
+        """A point just off the left, right or bottom of the screen."""
+        r = self.rng
+        side = side or r.choice(["left", "right", "bottom", "bottom"])
+        if side == "left":
+            return side, (-1.4, r.uniform(self.edge_c[1] + self.edge_r + 0.9, self.SH - 0.6))
+        if side == "right":
+            return side, (self.SW + 1.4, r.uniform(0.7, self.SH - 0.6))
+        return side, (r.uniform(0.6, self.SW - 0.6), self.SH + 1.4)
+
+    def _spot(self, margin=0.9):
+        """A random spot in the visible water."""
+        for _ in range(30):
+            x = self.rng.uniform(margin, self.SW - margin)
+            y = self.rng.uniform(margin, self.SH - margin)
+            if self._in_pool(x, y, 0.8):
+                return x, y
+        return self.SW * 0.6, self.SH * 0.6
 
     # ------------------------------------------------------------- swimmers
-    def _arrive(self, n_others, already_in=False):
-        (lx, ly), face = self.rng.choice(LADDERS)
-        s = Swimmer(lx, ly, face + math.pi, rng=self.rng)
-        s.mode = "tread"
-        s.alpha = 1.0 if already_in else 0.0
-        kind = self.rng.choice(["laps", "laps", "float", "float", "noodle", "chat"])
-        if already_in:
-            kind = "float"
-        if kind == "noodle":
-            s.mode = "noodle"
-        s.plan = self._plan(kind, s)
+    def _arrive(self):
+        r = self.rng
+        kind = r.choice(["laps", "laps", "cross", "float", "float", "noodle", "chat", "wall"])
+        if kind == "laps":
+            x = self.lane_x + r.choice([-0.5, 0.5])
+            start = (x, self.SH + 1.4)
+            plan = [("swim", (x, self._wall_y(x) + 0.55)), ("rest", r.uniform(2, 7)),
+                    ("swim", (x + r.uniform(-0.2, 0.2), self.SH + 1.4))]
+        else:
+            side, start = self._side_point()
+            if kind == "cross":
+                other = {"left": "right", "right": "left"}.get(side, r.choice(["left", "right"]))
+                plan = [("swim", self._spot(1.2)), ("swim", self._side_point(other)[1])]
+            elif kind == "float":
+                plan = [("swim", self._spot()), ("float", r.uniform(30, 70)), ("leave", None)]
+            elif kind == "noodle":
+                plan = [("swim", self._spot()), ("drift", r.uniform(35, 80)), ("leave", None)]
+            elif kind == "wall":
+                x = r.uniform(0.5, self.edge_c[0] + self.edge_r - 0.3)
+                plan = [("swim", (x, self._wall_y(x) + 0.45)), ("rest", r.uniform(25, 55)), ("leave", None)]
+            else:
+                plan = [("chat", r.uniform(25, 50)), ("leave", None)]
+        s = Swimmer(*start, 0.0, rng=r)
+        s.a = math.atan2(self.SH * 0.5 - start[1], self.SW * 0.5 - start[0])
+        s.noodler = kind == "noodle"
+        s.plan = plan
+        self._next_task(s)
         self.swimmers.append(s)
         return s
 
-    def _plan(self, kind, s):
-        r = self.rng
-        lane = r.choice([PW * 0.17, PW * 0.5, PW * 0.83])
-        if kind == "laps":
-            ends = []
-            for i in range(r.randint(2, 4)):
-                ends.append(("swim", (lane + r.uniform(-0.2, 0.2), 0.8 if i % 2 == 0 else PH - 0.8)))
-                ends.append(("rest", r.uniform(2, 6)))
-            return [("swim", (lane, PH * 0.5))] + ends + [("leave", None)]
-        if kind == "float":
-            return [("swim", (r.uniform(1.2, PW - 1.2), r.uniform(1.5, PH - 1.5))),
-                    ("float", r.uniform(35, 80)), ("leave", None)]
-        if kind == "noodle":
-            return [("drift", r.uniform(40, 90)), ("leave", None)]
-        # chat: drift over to someone and tread nearby
-        return [("chat", r.uniform(25, 50)), ("leave", None)]
-
     def _next_task(self, s):
         if not s.plan:
-            s.leaving = True
-            return
+            s.plan = [("leave", None)]
         kind, arg = s.plan.pop(0)
         s.task = kind
         s.timer = arg if isinstance(arg, (int, float)) else 0.0
+        s.target = None
         if kind == "swim":
             s.target = arg
-            s.mode = "breast"
+            s.mode = "noodle" if s.noodler else "breast"
         elif kind == "rest":
-            s.mode, s.target = "tread", None
+            s.mode = "noodle" if s.noodler else "tread"
         elif kind == "float":
-            s.mode, s.target = "float", None
+            s.mode = "float"
         elif kind == "drift":
-            s.mode, s.target = "noodle", None
+            s.mode = "noodle"
         elif kind == "chat":
             friend = min((o for o in self.swimmers if o is not s and not o.leaving),
                          key=lambda o: (o.x - s.x) ** 2 + (o.y - s.y) ** 2, default=None)
-            if friend:
-                s.target = (friend.x + self.rng.uniform(-1, 1), friend.y + self.rng.uniform(-1, 1))
-                s.mode = "breast"
-                s.plan.insert(0, ("rest", s.timer))
-                s.task = "swim"
-        elif kind == "leave":
-            (lx, ly), _ = min(LADDERS, key=lambda L: (L[0][0] - s.x) ** 2 + (L[0][1] - s.y) ** 2)
-            s.target = (lx, ly)
+            fx, fy = (friend.x, friend.y) if friend else self._spot()
+            tx = min(self.SW - 0.6, max(0.6, fx + self.rng.uniform(-1.1, 1.1)))
+            ty = min(self.SH - 0.6, max(0.6, fy + self.rng.uniform(-1.1, 1.1)))
+            s.target = (tx, ty)
             s.mode = "breast"
+            s.plan.insert(0, ("rest", s.timer))
+            s.task = "swim"
+        elif kind == "leave":
             s.leaving = True
+            s.target = self._side_point()[1]
+            s.mode = "noodle" if s.noodler else "breast"
 
     # ------------------------------------------------------------- input
     def fingers(self, fingers):
@@ -366,11 +383,15 @@ class Scene(BaseScene):
                 self.taps[k] = (self.t, x, y, 0.0)
 
     def _go(self, x, y):
-        mx = min(PW - 0.4, max(0.4, (x - POOL[0]) / PXM))
-        my = min(PH - 0.4, max(0.4, (y - POOL[1]) / PXM))
+        mx = min(self.SW - 0.4, max(0.4, x / self.pxm))
+        my = min(self.SH - 0.4, max(0.4, y / self.pxm))
+        if not self._in_pool(mx, my, 0.45):                  # tapped the deck: the nearest water instead
+            dx, dy = mx - self.edge_c[0], my - self.edge_c[1]
+            k = (self.edge_r + 0.5) / max(math.hypot(dx, dy), 1e-6)
+            mx, my = self.edge_c[0] + dx * k, self.edge_c[1] + dy * k
         self.you.target = (mx, my)
         self.you.mode = "breast"
-        self.marker = (mx, my, self.t)
+        self._poke(mx, my, 0.35)                              # a little plip where you tapped
 
     # ------------------------------------------------------------- update
     def update(self, dt):
@@ -380,8 +401,8 @@ class Scene(BaseScene):
         self.next_arrival -= dt * p.busy
         if self.next_arrival <= 0:
             if len(others) < int(p.others):
-                self._arrive(len(others))
-            self.next_arrival = self.rng.uniform(14, 40)
+                self._arrive()
+            self.next_arrival = self.rng.uniform(12, 35)
         for s in self.swimmers:
             self._move(s, dt)
         self._separate()
@@ -390,58 +411,52 @@ class Scene(BaseScene):
 
     def _move(self, s, dt):
         p = self.p
-        if not s.you:
-            if s.alpha < 1 and not s.leaving:
-                s.alpha = min(1.0, s.alpha + dt * 0.5)     # climbing down the ladder
-                if s.alpha < 1:
-                    s.phase = (s.phase + dt * 0.4) % 1
-                    return
-                self._next_task(s)
-            elif s.leaving and s.target is None:
-                s.alpha -= dt * 0.5                         # climbing out
-                if s.alpha <= 0:
-                    s.gone = True
-                return
-            elif s.target is None and s.timer > 0:
-                s.timer -= dt
-                if s.timer <= 0:
-                    self._next_task(s)
-            elif s.target is None and not s.leaving and s.alpha >= 1 and not getattr(s, "task", None):
+        if not s.you and s.target is None:
+            s.timer -= dt
+            if s.timer <= 0:
                 self._next_task(s)
         pace = p.pace * s.pace
-        if s.mode == "breast" and s.target is not None:
+        if s.target is not None and s.mode in ("breast", "noodle"):
             tx, ty = s.target
             dx, dy = tx - s.x, ty - s.y
             dist = math.hypot(dx, dy)
-            want = math.atan2(dy, dx)
-            turn = angle_to(s.a, want)
+            turn = angle_to(s.a, math.atan2(dy, dx))
             s.a += max(-1.0, min(1.0, turn)) * dt * 1.4
-            period = 2.3 / pace
-            s.phase = (s.phase + dt / period) % 1
-            ph = s.phase
-            surge = 0.35 + 1.25 * math.exp(-(((ph - 0.6) % 1.0) * 3.2))   # glide after the kick
-            v = 0.5 * pace * surge * max(0.25, math.cos(turn) if abs(turn) < 1.5 else 0.25)
-            v *= min(1.0, dist / 0.8 + 0.25)
-            s.speed = v
             fx, fy = s.f
+            if s.mode == "breast":
+                s.phase = (s.phase + dt * pace / 2.3) % 1
+                ph = s.phase
+                surge = 0.35 + 1.25 * math.exp(-(((ph - 0.6) % 1.0) * 3.2))   # glide after the kick
+                v = 0.5 * pace * surge
+                if 0.05 < ph < 0.3 and self.t - s.last_splash > 0.12:      # hands sweeping out
+                    sx, sy = -fy, fx
+                    for side in (-1, 1):
+                        self._poke(s.x + fx * 0.35 + sx * side * 0.4, s.y + fy * 0.35 + sy * side * 0.4, 0.5)
+                    s.last_splash = self.t
+            else:                                                           # kicking along on a noodle
+                s.phase = (s.phase + dt * 0.35) % 1
+                v = 0.16 * pace
+                if self.t - s.last_splash > 0.8:
+                    self._poke(s.x - fx * 0.5, s.y - fy * 0.5, 0.2)
+                    s.last_splash = self.t
+            v *= max(0.25, math.cos(turn)) * min(1.0, dist / 0.8 + 0.25)
+            s.speed = v
             s.x += fx * v * dt
             s.y += fy * v * dt
-            if dist < 0.3:
+            self._poke(s.x + fx * 0.25, s.y + fy * 0.25, 0.10 * v)         # soft bow wave
+            arrived = dist < 0.3 or (s.leaving and self._offscreen(s))
+            if not s.you and self._offscreen(s, 1.2) and (s.leaving or s.task == "swim" and
+                                                              not self._on_screen_pt(s.target)):
+                s.gone = True
+            elif arrived:
                 s.target = None
                 s.speed = 0.0
-                s.mode = "tread"
-                if not s.you:
-                    if s.leaving:
-                        s.target = None
-                    else:
-                        self._next_task(s)
-            # splashes: hands as they sweep out, a little bow wave at the head
-            if 0.05 < ph < 0.3 and self.t - s.last_splash > 0.12:
-                sx, sy = -fy, fx
-                for side in (-1, 1):
-                    self._poke(s.x + fx * 0.35 + sx * side * 0.4, s.y + fy * 0.35 + sy * side * 0.4, 0.55)
-                s.last_splash = self.t
-            self._poke(s.x + fx * 0.25, s.y + fy * 0.25, 0.10 * v)
+                if s.you:
+                    s.mode = "tread"
+                elif s.leaving:
+                    s.gone = True
+                else:
+                    self._next_task(s)
         else:
             s.speed = 0.0
             rate = {"tread": 0.55, "noodle": 0.35, "float": 0.18}.get(s.mode, 0.5)
@@ -467,11 +482,24 @@ class Scene(BaseScene):
                     self._poke(s.x - fy * side * 0.45, s.y + fx * side * 0.45, 0.22)
                     self._poke(s.x, s.y, 0.12)
                     s.last_splash = self.t
-        s.x = min(PW - 0.25, max(0.25, s.x))
-        s.y = min(PH - 0.25, max(0.25, s.y))
+        self._keep_in(s)
+
+    def _on_screen_pt(self, pt):
+        return pt is not None and 0 <= pt[0] <= self.SW and pt[1] <= self.SH
+
+    def _keep_in(self, s):
+        dx, dy = s.x - self.edge_c[0], s.y - self.edge_c[1]
+        d = max(math.hypot(dx, dy), 1e-6)
+        lim = self.edge_r + 0.32
+        if d < lim:                                         # stay off the wall
+            s.x, s.y = self.edge_c[0] + dx / d * lim, self.edge_c[1] + dy / d * lim
+        s.y = max(0.3, s.y)
+        if s.you:
+            s.x = min(self.SW - 0.3, max(0.3, s.x))
+            s.y = min(self.SH - 0.3, s.y)
 
     def _separate(self):
-        sw = [s for s in self.swimmers if s.alpha > 0.3]
+        sw = self.swimmers
         for i, a in enumerate(sw):
             for b in sw[i + 1:]:
                 dx, dy = b.x - a.x, b.y - a.y
@@ -486,8 +514,8 @@ class Scene(BaseScene):
 
     # ------------------------------------------------------------- waves
     def _poke(self, x, y, amount):
-        cx = int(x * PXM / CELL)
-        cy = int(y * PXM / CELL)
+        cx = int(x * self.pxm / CELL)
+        cy = int(y * self.pxm / CELL)
         if not (2 <= cx < self.gw - 2 and 2 <= cy < self.gh - 2):
             return
         self.vel[cy - 2:cy + 3, cx - 2:cx + 3] -= self.kernel * amount * 0.6 * self.p.ripple
@@ -497,16 +525,18 @@ class Scene(BaseScene):
         h, v, pad = self.hgt, self.vel, self.pad
         c = 0.045 * p.ripple_speed ** 2
         damp = math.exp(-dt * 0.55 * p.ripple_fade)
-        pad[1:-1, 1:-1] = h                                  # walls reflect: copy the edge outward
+        pad[1:-1, 1:-1] = h
         pad[0, 1:-1] = h[0]
         pad[-1, 1:-1] = h[-1]
         pad[1:-1, 0] = h[:, 0]
         pad[1:-1, -1] = h[:, -1]
         lap = pad[:-2, 1:-1] + pad[2:, 1:-1] + pad[1:-1, :-2] + pad[1:-1, 2:] - 4 * h
         v += lap * c
+        v *= self.sponge                                     # the wall (masked) reflects; screen edges absorb
         v *= damp
         h += v
-        h -= h.mean()                                         # keep the water level
+        h *= self.mask
+        h -= h.mean() * self.mask                            # keep the water level
 
     # ------------------------------------------------------------- drawing
     def _draw_bodies(self):
@@ -578,6 +608,9 @@ class Scene(BaseScene):
                     limb(P(0.0, side * 0.2), hand, 0.06, skin)
                 if s.mode == "noodle":
                     limb(P(0.28, -0.85), P(0.28, 0.85), 0.07, s.noodle)
+        for s in self.swimmers:                            # heads too, so they cast shadows
+            hx, hy = self._head_pos(s)
+            pygame.draw.circle(surf, s.skin + (235,), (hx * B, hy * B), 0.11 * B)
         return surf
 
     def _head_tex(self, gl, s):
@@ -585,32 +618,39 @@ class Scene(BaseScene):
         kind, col = s.head
         on_back = s.mode == "float"
         d = int(round((s.a % (2 * math.pi)) / (2 * math.pi) * 16)) % 16
-        key = f"head_{kind}_{col}_{s.skin}_{on_back}_{d}"
+        key = f"head_{kind}_{col}_{s.skin}_{on_back}_{d}_{int(self.pxm)}"
         cache = self.__dict__.setdefault("_heads", {})
         if key in cache:
             return cache[key]
-        S, R = 4, 24                                         # draw 4x then shrink; 24 px canvas
+        r1 = 0.115 * self.pxm
+        R = int(r1 * 3.4) + 4                                # canvas size in px
+        S = 4                                                # draw 4x then shrink
         D = R * S
         big = pygame.Surface((D, D), pygame.SRCALPHA)
         c = D // 2
-        r = 0.115 * PXM * S
+        r = r1 * S
         ang = d / 16 * 2 * math.pi
         fx, fy = math.cos(ang), math.sin(ang)
-        pygame.draw.circle(big, (255, 255, 255, 40), (c, c), int(r * 1.55))              # water ring
-        pygame.draw.circle(big, (10, 30, 50, 60), (c + S * 2, c + S * 2), int(r * 1.1))   # shadow
+        pygame.draw.circle(big, (255, 255, 255, 34), (c, c), int(r * 1.6))               # water ring
+        pygame.draw.circle(big, (255, 255, 255, 60), (c, c), int(r * 1.25), max(1, S))
         if on_back:
             pygame.draw.circle(big, s.skin, (c, c), int(r))                                # face up
-            hc = HAIR[0] if kind == "cap" else col
-            pygame.draw.circle(big, col if kind == "cap" else hc, (int(c - fx * r * 0.55), int(c - fy * r * 0.55)), int(r * 0.75))
+            hc = col if kind == "cap" else col
+            pygame.draw.circle(big, hc, (int(c - fx * r * 0.55), int(c - fy * r * 0.55)), int(r * 0.75))
             pygame.draw.circle(big, s.skin, (int(c + fx * r * 0.25), int(c + fy * r * 0.25)), int(r * 0.72))
         else:
             pygame.draw.circle(big, s.skin, (int(c + fx * r * 0.18), int(c + fy * r * 0.18)), int(r * 0.95))
             pygame.draw.circle(big, col, (int(c - fx * r * 0.12), int(c - fy * r * 0.12)), int(r * 0.97))
-        hl = (int(c - r * 0.35), int(c - r * 0.4))
-        pygame.draw.circle(big, (255, 255, 255, 120), hl, int(r * 0.28))                  # wet shine
+        pygame.draw.circle(big, (255, 255, 255, 140), (int(c + r * 0.3), int(c - r * 0.38)), int(r * 0.26))   # sun shine
         small = pygame.transform.smoothscale(big, (R, R))
         cache[key] = gl.surface_texture(small, key)
         return cache[key]
+
+    def _head_pos(self, s):
+        fx, fy = s.f
+        off = {"breast": 0.36, "float": 0.40}.get(s.mode, 0.0)
+        bob = 0.02 * math.sin(s.phase * 4 * math.pi) if s.mode in ("tread", "noodle") else 0.0
+        return s.x + fx * off, s.y + fy * off + bob
 
     def draw_gl(self, gl):
         p = self.p
@@ -619,65 +659,51 @@ class Scene(BaseScene):
         wb = self.wbuf
         wb[..., 0] = np.clip(128 + gx * 600, 0, 255)
         wb[..., 1] = np.clip(128 + gy * 600, 0, 255)
-        wb[..., 2] = np.clip(128 + h * 300, 0, 255)
         self.wave_tex.update(wb.tobytes())
         self.body_tex.update(pygame.image.tobytes(self._draw_bodies(), "RGBA"))
 
-        gl.screen()
+        if self.target:
+            self.target.bind()
+        else:
+            gl.screen()
         pr = self.prog
         pr.use()
         self.wave_tex.bind(0)
         self.body_tex.bind(1)
         pr.set_int("u_wave", 0)
         pr.set_int("u_body", 1)
-        pr.set("u_pool", *POOL)
-        pr.set("u_look", p.refraction, p.lights, p.dusk, p.glints)
-        pr.set("u_misc", self.t % 500.0, PXM, self.w, self.h)
+        pr.set("u_time", self.t % 1000.0)
+        pr.set("u_a", p.ambient, p.ripple, p.caustics, p.refraction)
+        pr.set("u_b", p.tile_size, p.depth, p.glints, self.pxm)
+        pr.set("u_edge", self.edge_c[0], self.edge_c[1], self.edge_r, COPING)
+        pr.set("u_misc", self.w, self.h, self.lane_x, self.lane_end)
         gl.draw_quad()
-        gl.blit_at(self.deck_tex, 0, 0)
+        if self.target:
+            gl.screen()
+            gl.blit(self.target.tex)
 
-        if self.marker:                                      # where you tapped: a soft ring that fades
-            mx, my, t0 = self.marker
-            age = self.t - t0
-            if age < 1.6 and self.you.target is not None:
-                if not hasattr(self, "_ring"):
-                    ring = pygame.Surface((40, 40), pygame.SRCALPHA)
-                    pygame.draw.circle(ring, (255, 250, 220, 150), (20, 20), 14, 2)
-                    self._ring = gl.surface_texture(ring, "adultswim_ring")
-                gl.blit_at(self._ring, POOL[0] + mx * PXM - 20, POOL[1] + my * PXM - 20,
-                           alpha=max(0.0, 1 - age / 1.6))
         for s in self.swimmers:
-            if s.alpha <= 0:
-                continue
             tex = self._head_tex(gl, s)
-            fx, fy = s.f
-            if s.mode == "breast":
-                off = 0.36
-            elif s.mode == "float":
-                off = 0.40
-            else:
-                off = 0.0
-            bob = 0.02 * math.sin(s.phase * 4 * math.pi) if s.mode in ("tread", "noodle") else 0.0
-            hx = POOL[0] + (s.x + fx * off) * PXM - tex.w / 2
-            hy = POOL[1] + (s.y + fy * off + bob) * PXM - tex.h / 2
-            gl.blit_at(tex, hx, hy, alpha=s.alpha)
+            hx, hy = self._head_pos(s)
+            gl.blit_at(tex, hx * self.pxm - tex.w / 2, hy * self.pxm - tex.h / 2)
 
         if self.t < 8 and not self.taps:
             if not hasattr(self, "_hint"):
                 im = self.font.render("tap the water to swim there", True, (40, 40, 52))
                 hint = pygame.Surface((im.get_width() + 20, 28), pygame.SRCALPHA)
-                pygame.draw.rect(hint, (255, 255, 255, 160), hint.get_rect(), border_radius=10)
+                pygame.draw.rect(hint, (255, 255, 255, 170), hint.get_rect(), border_radius=10)
                 hint.blit(im, im.get_rect(center=(hint.get_width() // 2, 14)))
                 self._hint = gl.surface_texture(hint, "adultswim_hint")
-            gl.blit_at(self._hint, (self.w - self._hint.w) // 2, self.h - 80, alpha=min(1.0, 8 - self.t))
+            gl.blit_at(self._hint, (self.w - self._hint.w) // 2, self.h - 60, alpha=min(1.0, 8 - self.t))
 
     # ------------------------------------------------------------- preview
     def preview(self, step):
         self.rng.seed(5)
         for _ in range(60):
             self.update(step)
-        self._go(300, 200)
-        for _ in range(150):
+        self._go(330, 300)
+        self.next_arrival = 0
+        for _ in range(240):
             self.update(step)
         self.next_arrival = 0
         for _ in range(200):
