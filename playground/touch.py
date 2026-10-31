@@ -1,8 +1,13 @@
-"""Touch input from the Waveshare 2.8" DPI panel (Goodix controller, via evdev).
+"""Touch input via evdev, for both panels.
 
-Measured 2026-10-28 on Pi OS Trixie: the controller reports X 0..640 left->right
-and Y 0..480 top->bottom on the 480x640 portrait display (same direction,
-wrong scale), so coordinates are rescaled here.
+2.8" DPI panel (Goodix controller): measured 2026-10-28 on Pi OS Trixie, the
+controller reports X 0..640 left->right and Y 0..480 top->bottom on the 480x640
+portrait display (same direction, wrong scale), so coordinates are rescaled here.
+
+10.4" HDMI QLED (USB touch): `EvdevTouch.open(w, h, name=None)` takes the first
+multi-touch device it finds and scales by the range the device itself reports
+(its absinfo), so no measured numbers are needed. Run `python tools/touch_probe.py`
+to see what it picked and the raw numbers under your finger.
 
 events() returns a list of (kind, x, y) with kind "down", "move" or "up" for the
 first finger. The controller also reports up to 5 fingers using the Linux
@@ -23,11 +28,33 @@ if evdev is not None:
 RAW_W, RAW_H = 640, 480
 
 
+def _abs_range(dev):
+    """(raw width, raw height) from the device's own multi-touch axis ranges, or None."""
+    try:
+        caps = dict(dev.capabilities(absinfo=True).get(ecodes.EV_ABS, []))
+    except Exception:
+        return None
+    ax = caps.get(ecodes.ABS_MT_POSITION_X) or caps.get(ecodes.ABS_X)
+    ay = caps.get(ecodes.ABS_MT_POSITION_Y) or caps.get(ecodes.ABS_Y)
+    if not ax or not ay:
+        return None
+    return ax.max - ax.min + 1, ay.max - ay.min + 1
+
+
+def _is_multitouch(dev):
+    try:
+        codes = [c for c, _ in dev.capabilities(absinfo=True).get(ecodes.EV_ABS, [])]
+    except Exception:
+        return False
+    return ecodes.ABS_MT_POSITION_X in codes
+
+
 class EvdevTouch:
-    def __init__(self, dev, screen_w, screen_h):
+    def __init__(self, dev, screen_w, screen_h, raw=(RAW_W, RAW_H)):
         self.dev = dev
-        self.sx = screen_w / RAW_W
-        self.sy = screen_h / RAW_H
+        self.raw = raw
+        self.sx = screen_w / raw[0]
+        self.sy = screen_h / raw[1]
         self.x = self.y = 0
         self.down = False
         self.moved = False
@@ -37,16 +64,21 @@ class EvdevTouch:
         self.fingers = {}                # tracking id -> (x, y) in screen pixels
 
     @classmethod
-    def open(cls, screen_w, screen_h):
+    def open(cls, screen_w, screen_h, name=DEVICE_NAME):
+        """name: part of the device name to look for (the 2.8" Goodix by default).
+        name=None: the first multi-touch device, scaled by its own reported range."""
         if evdev is None:
             return None
-        for path in evdev.list_devices():
+        for path in sorted(evdev.list_devices()):
             try:
                 dev = evdev.InputDevice(path)
             except OSError:
                 continue
-            if DEVICE_NAME in dev.name:
+            if name is not None and name in dev.name:
                 return cls(dev, screen_w, screen_h)
+            if name is None and _is_multitouch(dev):
+                raw = _abs_range(dev) or (screen_w, screen_h)
+                return cls(dev, screen_w, screen_h, raw)
         return None
 
     def events(self):

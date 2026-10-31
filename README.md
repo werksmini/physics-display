@@ -11,6 +11,7 @@ Notes, setup guides and research live in the Notion workspace ("Physics Display 
   The older CPU-drawn scenes are retired to `scenes/_cpu/`: off the menu, but `python run.py grass` still runs them
 - `playground/` – the engine: scene loader, touch + framebuffer drivers, web control panel
 - `tools/make_previews.py` – regenerates each scene's `preview.png` and the gallery
+- `play.py` + `games/` – touch games for the 10.4" QLED (see below)
 - `demos/` – earlier standalone experiments
 - `config/` – known-good `config.txt` snippets, with OS version noted in each file
 
@@ -47,6 +48,21 @@ Pi) opens the panel through the GPU with vsync:
 
 GPU scenes don't run in the laptop window (Windows has no OpenGL ES library); `tools/make_previews.py`
 renders them in software. Shaders are GLSL ES 1.00; see the notes at the top of `playground/gl.py`.
+
+## Games on the 10.4" QLED
+
+A second runner, `play.py`, drives the Waveshare 10.4" QLED (1600x720, HDMI + USB touch) with touch
+games that use on-screen controls (`playground/ui.py`: buttons, hold buttons, sliders, thumbstick,
+multi-touch). Games draw at 800x360 and the GPU scales them 2x. See [games/README.md](games/README.md).
+
+```bash
+python play.py                 # games menu, fullscreen on the 10.4"
+python play.py hockey          # Air Hockey (two players)
+python play.py lander          # Lunar Lander
+python tools/touch_probe.py    # check the touchscreen
+```
+
+Panel setup: `config/hdmi-10in4-qled.txt` (comment out the 2.8" DPI overlays while the 10.4" is in use).
 
 ## Run at boot (no computer needed)
 
