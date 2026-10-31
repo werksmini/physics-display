@@ -58,14 +58,19 @@ bash tools/install_autostart.sh --remove   # turn it off
 At boot the Pi opens the **home screen**: a scrolling grid of vignettes with a preview of each.
 Tap one to open it (a yellow dot marks the one you had open last).
 
-Getting around without a computer: **hold a finger still against an edge for three seconds**
-(a little bar fills up after half a second, so you know it's counting):
+Getting around without a computer: **hold a finger still against an edge for two seconds**.
+A soft half-moon of light grows from your finger while it counts:
 
-| Edge | Goes to |
-|---|---|
-| Top | The home screen |
-| Right | The next vignette |
-| Left | The previous vignette |
+| Edge | Glow | Goes to |
+|---|---|---|
+| Top | green | The home screen |
+| Right | white | The next vignette |
+| Left | white | The previous vignette |
+| Bottom | blue | Start this vignette over |
+
+Each vignette opens with its own illustrated title card. The display fonts live in
+`playground/fonts` (SIL Open Font License; see the LICENSE file there), and the cards are drawn by
+`playground/brand.py` from each scene's `BRAND`.
 
 The control panel still works from a phone on the same Wi-Fi ("Home" is at the top of its scene list).
 

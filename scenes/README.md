@@ -6,11 +6,12 @@ Regenerate previews and this page with `python tools/make_previews.py`.
 
 | Preview | Scene |
 |---|---|
-| ![adultswim](adultswim/preview.png) | **[Adult swim (GPU)](adultswim/README.md)**<br>`python run.py adultswim`<br>Adult swim: the sunlit pool, a little closer in, with swimmers |
-| ![cloth](cloth/preview.png) | **[Cloth (GPU)](cloth/README.md)**<br>`python run.py cloth`<br>Cloth: a gingham tablecloth that drops onto a ball. Grab it and pull it around |
-| ![cubes](cubes/preview.png) | **[Cubes (GPU, 3D)](cubes/README.md)**<br>`python run.py cubes`<br>Cubes: turn a cube in space with your fingers, set it down, watch it fall |
-| ![pinart](pinart/preview.png) | **[Pin art (GPU)](pinart/README.md)**<br>`python run.py pinart`<br>Pin art: the desk toy with a bed of metal pins. Press and shapes rise out of it |
-| ![pool](pool/preview.png) | **[Sunlit pool (GPU)](pool/README.md)**<br>`python run.py pool`<br>A sunlit swimming pool seen from above; touch the water to make ripples |
+| ![adultswim](adultswim/preview.png) | **[Adult Swim](adultswim/README.md)**<br>`python run.py adultswim`<br>Adult swim: the sunlit pool, a little closer in, with swimmers |
+| ![cloth](cloth/preview.png) | **[Laundry Day](cloth/README.md)**<br>`python run.py cloth`<br>Laundry Day: a striped sheet pegged on a clothesline in a meadow at golden hour |
+| ![cubes](cubes/preview.png) | **[Block Party](cubes/README.md)**<br>`python run.py cubes`<br>Cubes: turn a cube in space with your fingers, set it down, watch it fall |
+| ![lavalamp](lavalamp/preview.png) | **[Lava Lamp](lavalamp/README.md)**<br>`python run.py lavalamp`<br>Lava Lamp: warm wax rises, cools, and sinks, in a glowing glass rocket |
+| ![pinart](pinart/preview.png) | **[Pin Art](pinart/README.md)**<br>`python run.py pinart`<br>Pin art: the desk toy with a bed of metal pins. Press and shapes rise out of it |
+| ![pool](pool/preview.png) | **[Sunlit Pool](pool/README.md)**<br>`python run.py pool`<br>A sunlit swimming pool seen from above; touch the water to make ripples |
 
 ## Retired CPU scenes
 

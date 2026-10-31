@@ -17,6 +17,8 @@ Read parameters as self.p.speed every frame; slider changes apply instantly.
 """
 from dataclasses import dataclass
 
+EDGE = 40          # px: touches starting this close to an edge may be an edge hold (home / next / ...)
+
 
 @dataclass
 class Param:

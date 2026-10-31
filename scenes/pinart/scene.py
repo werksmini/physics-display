@@ -20,7 +20,7 @@ import math
 
 import numpy as np
 
-from playground.scene import BaseScene, Param
+from playground.scene import EDGE, BaseScene, Param
 
 FRAG = """
 uniform sampler2D u_h;
@@ -109,7 +109,10 @@ void main() {
 
 
 class Scene(BaseScene):
-    TITLE = "Pin art (GPU)"
+    TITLE = "Pin Art"
+    BRAND = dict(name="PIN ART", font="Bungee", size=64,
+                 fill=((246, 248, 252), (140, 146, 158)), outline=(26, 28, 34), outline_width=6,
+                 tagline="press your hand into it", art="pins", art_y=74)
     GPU = True
     PARAMS = [
         Param("finger", 30, 10, 70, 1, "Fingertip size", help="Pixels. Bigger = a broader press."),
@@ -148,7 +151,7 @@ class Scene(BaseScene):
         for k in list(self.held):
             if k not in fingers:                        # lifted: was it a quick tap?
                 t0, x0, y0 = self.touch_start.pop(k, (0, 0, 0))
-                x, y, _ = self.held.pop(k)
+                x, y = self.held.pop(k)[:2]
                 if self.t - t0 < 0.25 and math.hypot(x - x0, y - y0) < 12:
                     lt, lx, ly = self.last_tap
                     if self.t - lt < 0.4 and math.hypot(x - lx, y - ly) < 60:
@@ -158,13 +161,19 @@ class Scene(BaseScene):
                         self.last_tap = (self.t, x, y)
         for k, (x, y) in fingers.items():
             if k not in self.held:
-                self.held[k] = [x, y, 0.0]
+                # [x, y, seconds pressing, may press yet?]. A touch that starts at an edge might be an
+                # edge hold (home / next / reset), so it presses nothing until it moves inward.
+                at_edge = min(x, y, self.w - 1 - x, self.h - 1 - y) < EDGE
+                self.held[k] = [x, y, 0.0, not at_edge]
                 self.touch_start[k] = (self.t, x, y)
             else:
                 h = self.held[k]
                 if math.hypot(x - h[0], y - h[1]) > 3:
                     h[2] *= 0.7                         # moving: deepening eases off
                 h[0], h[1] = x, y
+                t0, x0, y0 = self.touch_start[k]
+                if not h[3] and math.hypot(x - x0, y - y0) > 25:
+                    h[3] = True                         # it was a drag after all
 
     def _tip(self):
         """Tip the board up: pins slide back, top rows first."""
@@ -192,9 +201,11 @@ class Scene(BaseScene):
             return
         R = p.finger
         lift = p.parallax * 0.55                        # press slightly above the fingertip so
-        for h in self.held.values():                    # the risen heads land under it
+        for k, h in self.held.items():                  # the risen heads land under it
+            if not h[3] or self.t - self.touch_start[k][0] < 0.08:
+                continue                                # a short delay before pins start to move
             h[2] += dt
-            x, y, still = h
+            x, y, still = h[:3]
             depth = min(1.0, p.press + p.deepen * max(0.0, still - 0.15) * 0.5)
             yy = y - lift * depth
             r0, r1 = max(0, int((yy - R - self.off[1]) / p.spacing) - 1), int((yy + R - self.off[1]) / p.spacing) + 2

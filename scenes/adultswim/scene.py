@@ -280,7 +280,10 @@ class Swimmer:
 
 
 class Scene(BaseScene):
-    TITLE = "Adult swim (GPU)"
+    TITLE = "Adult Swim"
+    BRAND = dict(name="Adult Swim", font="Pacifico", size=68, tilt=4,
+                 fill=((255, 255, 255), (184, 236, 250)), outline=(18, 98, 146), outline_width=6,
+                 tagline="a quiet afternoon at the pool", art="waves", art_y=214)
     GPU = True
     PARAMS = [
         Param("others", 3, 0, 6, 1, "Other swimmers", help="Most at once."),

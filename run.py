@@ -6,10 +6,11 @@
     python run.py --list             # show available scenes
     python run.py pool --gpu         # draw through the GPU (needed for shader scenes)
 
-On the Pi, hold a finger still against an edge of the screen for three seconds:
+On the Pi, hold a finger still against an edge of the screen for two seconds:
     top edge    -> back to the home screen
     right edge  -> next vignette
     left edge   -> previous vignette
+    bottom edge -> start this vignette over
 
 While it runs, open the control panel in a browser:
     http://<pi-address>:8000   (from the laptop or phone)
@@ -31,7 +32,7 @@ import pygame
 from playground.control import Controller, start_server
 from playground.launcher import HOME, Launcher
 from playground.loader import exists, list_scenes, load_module, preset_path
-from playground.scene import Values
+from playground.scene import EDGE, Values
 from playground import state
 from playground.touch import EvdevTouch
 
@@ -39,8 +40,7 @@ W, H = 480, 640                   # panel resolution (portrait)
 STEP = 1 / 60                     # fixed physics/animation time step
 MAX_STEPS = 2                     # when a frame is slow, catch up at most this much
                                   # (more would make the next frame slower still)
-HOLD_SECONDS = 3.0                # hold still against an edge this long to navigate
-EDGE = 40                         # edge zone width, in pixels
+HOLD_SECONDS = 2.0                # hold still against an edge this long to navigate
 
 
 def open_gpu():
@@ -140,18 +140,23 @@ def mem_report():
 
 class EdgeHold:
     """Getting around with no computer: hold a finger still against an edge.
-    Top edge: home screen. Right edge: next vignette. Left edge: previous.
-    Coordinates are the scene's (so "top" is the top as you look at it)."""
+    Top edge: home screen. Right: next vignette. Left: previous. Bottom: start over.
+    Coordinates are the scene's (so "top" is the top as you look at it).
 
-    ACTIONS = {"top": ("home", "Home"), "right": ("next", "Next  \u203a"), "left": ("prev", "\u2039  Previous")}
+    While you hold, a soft half-moon of light grows out from your finger: white at the
+    sides, green at the top (home), blue at the bottom (reset), never more than half opaque."""
+
+    ACTIONS = {"top": "home", "right": "next", "left": "prev", "bottom": "reset"}
+    COLORS = {"top": (110, 230, 140), "bottom": (110, 170, 255), "left": (255, 255, 255), "right": (255, 255, 255)}
+    RADIUS = 150                              # px, when the hold completes
 
     def __init__(self):
         self.start = None                     # (edge, x, y, time)
-        self.font = pygame.font.Font(None, 26)
+        self._moons = {}                      # edge -> pygame Surface
 
     def feed(self, kind, x, y, w, h, now):
         if kind == "down":
-            near = {"top": y, "left": x, "right": w - 1 - x}
+            near = {"top": y, "left": x, "right": w - 1 - x, "bottom": h - 1 - y}
             edge = min(near, key=near.get)
             self.start = (edge, x, y, now) if near[edge] < EDGE else None
         elif kind == "move" and self.start and math.hypot(x - self.start[1], y - self.start[2]) > 25:
@@ -160,59 +165,123 @@ class EdgeHold:
             self.start = None
 
     def check(self, now):
-        """'home', 'next' or 'prev' when a hold completes."""
+        """'home', 'next', 'prev' or 'reset' when a hold completes."""
         if self.start and now - self.start[3] >= HOLD_SECONDS:
             edge = self.start[0]
             self.start = None
-            return self.ACTIONS[edge][0]
+            return self.ACTIONS[edge]
         return None
 
-    def indicator(self, w, h, now):
-        """(surface, (x, y)) showing the hold filling up, once it's clearly a hold."""
-        if not self.start or now - self.start[3] < 0.5:
+    def _moon(self, edge):
+        """A soft half-disc of light, flat side on the screen edge, fading to nothing."""
+        if edge not in self._moons:
+            import numpy as np
+            R = 128
+            yy, xx = np.mgrid[0:R, 0:2 * R]
+            d = np.hypot(xx + 0.5 - R, yy + 0.5) / R           # 0 at the press point, 1 at the rim
+            a = np.clip(1.0 - d, 0, 1) ** 1.25                  # smooth falloff, no hard edge
+            surf = pygame.Surface((2 * R, R), pygame.SRCALPHA)
+            surf.fill(self.COLORS[edge] + (0,))
+            alpha = pygame.surfarray.pixels_alpha(surf)
+            alpha[:] = (a.T * 0.5 * 255).astype(np.uint8)       # never more than 50% opaque
+            del alpha
+            surf = {"top": surf, "bottom": pygame.transform.flip(surf, False, True),
+                    "left": pygame.transform.rotate(surf, 90), "right": pygame.transform.rotate(surf, -90)}[edge]
+            self._moons[edge] = surf
+        return self._moons[edge]
+
+    def _box(self, w, h, now):
+        """(edge, (x, y, w, h), opacity) of the growing half-moon, or None."""
+        if not self.start or now - self.start[3] < 0.12:
             return None
         edge, x, y, t0 = self.start
-        frac = min(1.0, (now - t0) / HOLD_SECONDS)
-        label = self.font.render(self.ACTIONS[edge][1], True, (245, 245, 245))
-        bw = max(label.get_width() + 28, 120)
-        img = pygame.Surface((bw, 44), pygame.SRCALPHA)
-        pygame.draw.rect(img, (0, 0, 0, 170), img.get_rect(), border_radius=12)
-        img.blit(label, label.get_rect(center=(bw // 2, 17)))
-        pygame.draw.rect(img, (255, 255, 255, 60), (12, 33, bw - 24, 4), border_radius=2)
-        pygame.draw.rect(img, (246, 206, 60), (12, 33, int((bw - 24) * frac), 4), border_radius=2)
+        p = min(1.0, (now - t0) / HOLD_SECONDS)
+        r = self.RADIUS * (0.12 + 0.88 * (1 - (1 - p) ** 2))   # grows quickly, then eases
+        fade = min(1.0, (now - t0 - 0.12) / 0.25)
         if edge == "top":
-            pos = (min(max(x - bw // 2, 6), w - bw - 6), EDGE + 16)
+            box = (x - r, 0, 2 * r, r)
+        elif edge == "bottom":
+            box = (x - r, h - r, 2 * r, r)
         elif edge == "left":
-            pos = (EDGE + 16, min(max(y - 22, 6), h - 50))
+            box = (0, y - r, r, 2 * r)
         else:
-            pos = (w - bw - EDGE - 16, min(max(y - 22, 6), h - 50))
-        return img, pos
+            box = (w - r, y - r, r, 2 * r)
+        return edge, box, fade
+
+    def draw_gl(self, gl, w, h, now):
+        b = self._box(w, h, now)
+        if b:
+            edge, (x, y, bw, bh), fade = b
+            tex = self._moons.get(("tex", edge))
+            if tex is None or ("tex", tex.id) not in gl.owned:     # upload once per scene, not per frame
+                tex = gl.surface_texture(self._moon(edge), "edge_moon_" + edge)
+                self._moons[("tex", edge)] = tex
+            gl.blit_rect(tex, x, y, bw, bh, alpha=fade)
+
+    def draw(self, surf, now):
+        b = self._box(*surf.get_size(), now)
+        if b:
+            edge, (x, y, bw, bh), fade = b
+            img = pygame.transform.smoothscale(self._moon(edge), (max(1, int(bw)), max(1, int(bh))))
+            if fade < 1:
+                img.fill((255, 255, 255, int(255 * fade)), special_flags=pygame.BLEND_RGBA_MULT)
+            surf.blit(img, (int(x), int(y)))
 
 
 class Banner:
-    """Shows the scene name for a moment after switching."""
+    """Names the vignette for a moment after it opens: its illustrated title card
+    (Scene.BRAND, see playground/brand.py) fading in and out, or plain text."""
 
     def __init__(self):
-        self.text, self.until = "", 0.0
+        self.img, self.t0, self.secs = None, 0.0, 0.0
         self.font = pygame.font.Font(None, 40)
+        self._cards = {}
+        self._tex = None
 
-    def show(self, text, now, secs=2.5):
-        self.text, self.until = text, now + secs
+    def show(self, text, now, secs=2.5, brand=None):
+        if brand:
+            if brand["name"] not in self._cards:
+                from playground.brand import title_card
+                self._cards[brand["name"]] = title_card(brand)
+            self.img, secs = self._cards[brand["name"]], 2.8
+        else:
+            txt = self.font.render(text, True, (245, 245, 245))
+            img = pygame.Surface(txt.get_rect().inflate(36, 22).size, pygame.SRCALPHA)
+            pygame.draw.rect(img, (0, 0, 0, 170), img.get_rect(), border_radius=12)
+            img.blit(txt, txt.get_rect(center=img.get_rect().center))
+            self.img = img
+        self.t0, self.secs = now, secs
+        self._tex = None
 
-    def image(self, now):
-        """The banner as a small surface, or None when it isn't showing."""
-        if now > self.until or not self.text:
+    def _state(self, now):
+        """(alpha, lift in px) or None when not showing."""
+        age = now - self.t0
+        if not self.img or age > self.secs:
             return None
-        txt = self.font.render(self.text, True, (245, 245, 245))
-        img = pygame.Surface(txt.get_rect().inflate(36, 22).size, pygame.SRCALPHA)
-        pygame.draw.rect(img, (0, 0, 0, 170), img.get_rect(), border_radius=12)
-        img.blit(txt, txt.get_rect(center=img.get_rect().center))
-        return img
+        a = min(1.0, age / 0.3, (self.secs - age) / 0.6)
+        lift = 10 * (1 - min(1.0, age / 0.5)) ** 2              # settles into place
+        return max(0.0, a), lift
+
+    def draw_gl(self, gl, w, h, now):
+        st = self._state(now)
+        if st is None:
+            return
+        if self._tex is None or ("tex", self._tex.id) not in gl.owned:   # upload once per showing
+            self._tex = gl.surface_texture(self.img, "banner")
+        x = (w - self.img.get_width()) // 2
+        y = (h - self.img.get_height()) // 2 + st[1]
+        gl.blit_at(self._tex, x, y, alpha=st[0])
 
     def draw(self, surf, now):
-        img = self.image(now)
-        if img:
-            surf.blit(img, img.get_rect(center=(surf.get_width() // 2, surf.get_height() // 2)))
+        st = self._state(now)
+        if st is None:
+            return
+        img = self.img
+        if st[0] < 1:
+            img = img.copy()
+            img.fill((255, 255, 255, int(255 * st[0])), special_flags=pygame.BLEND_RGBA_MULT)
+        w, h = surf.get_size()
+        surf.blit(img, ((w - img.get_width()) // 2, (h - img.get_height()) // 2 + int(st[1])))
 
 
 class Stage:
@@ -377,7 +446,7 @@ def main():
     edges = EdgeHold()
     banner = Banner()
     if args.scene != HOME:
-        banner.show(available[args.scene], time.time(), 2.0)
+        banner.show(available[args.scene], time.time(), 2.0, getattr(scene, "BRAND", None))
     names = list(menu) or [HOME]
     flip_seen = ctrl.flip_landscape
 
@@ -403,6 +472,8 @@ def main():
             action = edges.check(now)              # edge hold: home / next / previous
             if action == "home":
                 ctrl.request_scene(HOME)
+            elif action == "reset":
+                ctrl.request_reset()
             elif action:
                 cur = ctrl.scene_name
                 if cur in names:
@@ -423,7 +494,7 @@ def main():
                     ctrl.last_error = ""
                     if name and name != HOME:
                         state.save(scene=name)
-                        banner.show(available[name], now)
+                        banner.show(available[name], now, brand=getattr(scene, "BRAND", None))
                 except Exception:
                     ctrl.last_error = traceback.format_exc(limit=3)
                     print(ctrl.last_error)
@@ -479,12 +550,8 @@ def main():
                 scene.draw_gl(stage.gl)
                 stage.gl.reset_state()
                 overlays = [(fps_img, (4, 4))] if fps_img else []
-                b = banner.image(now)
-                if b:
-                    overlays.append((b, ((w - b.get_width()) // 2, (h - b.get_height()) // 2)))
-                ind = edges.indicator(*stage.size, now)
-                if ind:
-                    overlays.append(ind)
+                banner.draw_gl(stage.gl, *stage.size, now)
+                edges.draw_gl(stage.gl, *stage.size, now)
                 timing["draw"] = (time.perf_counter() - t_mark) * 1000
                 t_mark = time.perf_counter()
                 stage.present_gl(overlays)
@@ -495,9 +562,7 @@ def main():
                 if fps_img:
                     canvas.blit(fps_img, (4, 4))
                 banner.draw(canvas, now)
-                ind = edges.indicator(*stage.size, now)
-                if ind:
-                    canvas.blit(*ind)
+                edges.draw(canvas, now)
                 stage.present(ctrl.flip_landscape)
     except KeyboardInterrupt:
         pass

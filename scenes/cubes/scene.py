@@ -192,7 +192,11 @@ def reorthonormalize(R):
 
 
 class Scene(BaseScene):
-    TITLE = "Cubes (GPU, 3D)"
+    TITLE = "Block Party"
+    BRAND = dict(name="BLOCK PARTY", font="Bungee", size=48,
+                 letters=[(232, 76, 70), (250, 196, 60), (76, 186, 96), (72, 128, 232), (210, 96, 200), (64, 196, 210)],
+                 outline=(28, 28, 40), outline_width=6,
+                 tagline="pick up, spin and drop", art="cubes", art_y=78)
     GPU = True
     PARAMS = [
         Param("gravity", 1.0, 0.1, 3, 0.05, "Gravity"),

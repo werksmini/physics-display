@@ -17,7 +17,7 @@ from playground.scene import BaseScene
 
 HOME = "home"
 PAD = 16
-HEADER = 78
+HEADER = 90
 LABEL = 34
 
 BG_FS = """
@@ -84,12 +84,14 @@ class Launcher(BaseScene):
     # ------------------------------------------------------------- painting
     def _paint(self):
         surf = pygame.Surface((self.w, self.content_h), pygame.SRCALPHA)
-        title = pygame.font.Font(None, 46).render("Vignettes", True, (236, 240, 238))
-        sub = pygame.font.Font(None, 22).render("tap to open   ·   hold the top edge to come back",
-                                                True, (150, 172, 176))
-        surf.blit(title, (PAD + 2, 22))
-        surf.blit(sub, (PAD + 3, 54))
-        font = pygame.font.Font(None, 26)
+        from playground.brand import font as brand_font, styled_text
+        title = styled_text("Vignettes", brand_font("Pacifico", 34), fill=((240, 250, 246), (190, 226, 222)),
+                            outline=(14, 52, 60), ow=4, shadow=(0, 0, 0, 110))
+        sub = brand_font("Fredoka", 16).render("tap to open  ·  hold any edge for 2 s to get around",
+                                               True, (150, 176, 180))
+        surf.blit(title, (PAD - 10, 8))
+        surf.blit(sub, (PAD + 2, 66))
+        font = brand_font("Fredoka", 21)
         for name, rect in self.tiles:
             card = pygame.Surface(rect.size, pygame.SRCALPHA)
             pygame.draw.rect(card, (255, 255, 255, 26), card.get_rect(), border_radius=12)

@@ -121,7 +121,10 @@ void main() {
 
 
 class Scene(BaseScene):
-    TITLE = "Sunlit pool (GPU)"
+    TITLE = "Sunlit Pool"
+    BRAND = dict(name="Sunlit Pool", font="Shrikhand", size=56,
+                 fill=((255, 236, 120), (255, 160, 60)), outline=(150, 60, 30), outline_width=6,
+                 tagline="touch the water", art="sun", art_y=70)
     GPU = True
     PARAMS = [
         Param("ambient", 1.0, 0, 4, 0.05, "Wind on the water"),

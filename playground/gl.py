@@ -423,12 +423,16 @@ class GL:
             r.glDisable(GL_BLEND)
 
     def blit_at(self, tex, x, y, rot=0, alpha=1.0):
-        """Draw a texture at screen pixel (x, y), top-left origin, with blending.
+        """Draw a texture at screen pixel (x, y), top-left origin, with blending."""
+        w, h = (tex.h, tex.w) if rot else (tex.w, tex.h)
+        self.blit_rect(tex, x, y, w, h, rot, alpha)
+
+    def blit_rect(self, tex, x, y, w, h, rot=0, alpha=1.0):
+        """Draw a texture stretched to a w x h box at screen pixel (x, y), with blending.
 
         Anything hanging off the screen is clipped here first: the Pi's GPU can stall
         badly when asked to draw with a viewport that extends past the screen."""
-        w, h = (tex.h, tex.w) if rot else (tex.w, tex.h)
-        x, y = int(round(x)), int(round(y))
+        x, y, w, h = int(round(x)), int(round(y)), max(1, int(round(w))), max(1, int(round(h)))
         x0, y0 = max(x, 0), max(y, 0)
         x1, y1 = min(x + w, self.width), min(y + h, self.height)
         if x1 <= x0 or y1 <= y0:
