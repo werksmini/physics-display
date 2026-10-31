@@ -404,6 +404,15 @@ class GL:
             tex.update(data)
         return tex
 
+    def cached_texture(self, surf, key, refresh=False):
+        """Like surface_texture, but only uploads when there's no live texture under `key`
+        (or refresh=True). Safe across scene switches: freed textures leave the cache, so a
+        texture id that GL has since reused can never be mistaken for this one."""
+        tex = self._tex_cache.get(key)
+        if tex is None or refresh or (tex.w, tex.h) != surf.get_size():
+            tex = self.surface_texture(surf, key)
+        return tex
+
     def blit(self, tex, rot=0, alpha=1.0, blend=False):
         """Draw a texture over the whole current viewport (rot: see the blit shader)."""
         r = self.raw

@@ -212,10 +212,7 @@ class EdgeHold:
         b = self._box(w, h, now)
         if b:
             edge, (x, y, bw, bh), fade = b
-            tex = self._moons.get(("tex", edge))
-            if tex is None or ("tex", tex.id) not in gl.owned:     # upload once per scene, not per frame
-                tex = gl.surface_texture(self._moon(edge), "edge_moon_" + edge)
-                self._moons[("tex", edge)] = tex
+            tex = gl.cached_texture(self._moon(edge), "edge_moon_" + edge)    # uploaded once, not per frame
             gl.blit_rect(tex, x, y, bw, bh, alpha=fade)
 
     def draw(self, surf, now):
@@ -236,7 +233,7 @@ class Banner:
         self.img, self.t0, self.secs = None, 0.0, 0.0
         self.font = pygame.font.Font(None, 40)
         self._cards = {}
-        self._tex = None
+        self._fresh = True
 
     def show(self, text, now, secs=2.5, brand=None):
         if brand:
@@ -251,7 +248,7 @@ class Banner:
             img.blit(txt, txt.get_rect(center=img.get_rect().center))
             self.img = img
         self.t0, self.secs = now, secs
-        self._tex = None
+        self._fresh = True
 
     def _state(self, now):
         """(alpha, lift in px) or None when not showing."""
@@ -266,11 +263,11 @@ class Banner:
         st = self._state(now)
         if st is None:
             return
-        if self._tex is None or ("tex", self._tex.id) not in gl.owned:   # upload once per showing
-            self._tex = gl.surface_texture(self.img, "banner")
+        tex = gl.cached_texture(self.img, "banner", refresh=self._fresh)    # uploaded once per showing
+        self._fresh = False
         x = (w - self.img.get_width()) // 2
         y = (h - self.img.get_height()) // 2 + st[1]
-        gl.blit_at(self._tex, x, y, alpha=st[0])
+        gl.blit_at(tex, x, y, alpha=st[0])
 
     def draw(self, surf, now):
         st = self._state(now)
