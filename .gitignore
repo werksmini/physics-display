@@ -2,3 +2,7 @@
 __pycache__/
 *.pyc
 .DS_Store
+
+# drawings saved by the Monster Mash-up game
+games/monster/gallery/
+games/monster/shots/

@@ -16,6 +16,7 @@ Hold the **MENU** tab at the top centre for a second to go back to the menu. Esc
 |---|---|
 | ![hockey](hockey/preview.png) | **[Air Hockey](hockey/README.md)**<br>`python play.py hockey`<br>Two players, one at each end. First to 7. |
 | ![lander](lander/preview.png) | **[Lunar Lander](lander/README.md)**<br>`python play.py lander`<br>On-screen rotate and thrust buttons; land softly on a pad. |
+| ![monster](monster/preview.png) | **[Monster Mash-up](monster/README.md)**<br>`python play.py monster`<br>3-4 artists each draw a slice of a creature without peeking. |
 
 ## Writing a game
 
@@ -39,13 +40,15 @@ class Game:
     def fingers(self, fingers):    # {finger id: (x, y)} every frame, canvas pixels
         free = self.ui.feed(fingers)   # fingers not on a control are yours
 
+    def trails(self, trails): ...  # optional: {finger id: [every (x, y) since last frame]}, for drawing
     def update(self, dt): ...      # fixed 1/60 s steps; call self.ui.tick(dt) for hold buttons
     def draw(self, surf):          # 800x360 Surface
         ...
         self.ui.draw(surf)
 ```
 
-The canvas is 800x360 and is scaled 2x onto the panel by the GPU, so draw in canvas pixels
+Optional: an `idle` property that returns True when nothing has changed lets the runner skip
+redrawing (it matters on a slow Pi). The canvas is 800x360 and is scaled 2x onto the panel by the GPU, so draw in canvas pixels
 and keep touch targets at least ~40 px (about 0.45 in on the glass).
 
 `DEMO_TOUCHES` (optional) scripts fingers for a headless screenshot:

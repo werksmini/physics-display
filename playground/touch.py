@@ -63,6 +63,7 @@ class EvdevTouch:
         self.slots = {}                  # slot -> [tracking id, raw x, raw y]
         self.fingers = {}                # tracking id -> (x, y) in screen pixels
         self.seen = {}                   # every finger down at any point since take_seen()
+        self.trails = {}                 # tracking id -> every position reported since take_trails()
 
     @classmethod
     def open(cls, screen_w, screen_h, name=DEVICE_NAME):
@@ -88,6 +89,14 @@ class EvdevTouch:
         otherwise be missed entirely). Call after events()."""
         seen, self.seen = self.seen, dict(self.fingers)
         return seen
+
+    def take_trails(self):
+        """{finger id: [(x, y), ...]}: every position each finger passed through since
+        the last call, oldest first. The panel reports ~100 positions a second but a
+        slow Pi may only draw 10 frames, so a drawing game joins all of these, not
+        just the latest one, to keep curves smooth. Call after events()."""
+        trails, self.trails = self.trails, {}
+        return trails
 
     def events(self):
         out = []
@@ -119,6 +128,8 @@ class EvdevTouch:
                     self.fingers = {sl[0]: (sl[1] * self.sx, sl[2] * self.sy)
                                     for sl in self.slots.values() if sl[0] >= 0}
                     self.seen.update(self.fingers)
+                    for fid, pos in self.fingers.items():
+                        self.trails.setdefault(fid, []).append(pos)
                     # X/Y arrive in the same report as BTN_TOUCH, so act on SYN
                     pos = (self.x * self.sx, self.y * self.sy)
                     if self.pending == "down":

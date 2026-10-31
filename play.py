@@ -308,11 +308,13 @@ def main():
                     mouse_down = False
 
             brief = {}
+            trails = None
             if touch:
                 touch.events()
                 fingers = dict(touch.fingers)
                 # quick taps that went down and up since the last frame: show them for one feed
                 brief = {k: v for k, v in touch.take_seen().items() if k not in fingers}
+                trails = touch.take_trails()
             elif headless:
                 fingers = scripted_fingers(frame, script)
             elif mouse_down:
@@ -326,6 +328,11 @@ def main():
             free = shell.feed(fingers)                   # home tab first
             game.fingers(free)
             shell.tick(STEP)
+            if hasattr(game, "trails"):                  # drawing games: every point, not just the latest
+                if trails is None:                       # mouse / scripted: one point per frame
+                    trails = {k: [v] for k, v in fingers.items()}
+                game.trails({k: pts for k, pts in trails.items()
+                             if not shell.owner.get(k) and not (home.visible and home.hit(*pts[0]))})
 
             t0 = time.perf_counter()
             while acc >= STEP:
