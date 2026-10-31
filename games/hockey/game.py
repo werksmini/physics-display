@@ -12,7 +12,7 @@ import pygame
 import pygame.gfxdraw
 import pymunk
 
-from playground.ui import Controls, Button, font
+from playground.ui import Controls, Button, font, text
 
 W, H = 800, 360
 RINK = pygame.Rect(30, 18, 740, 324)     # playing surface, inside the rails
@@ -55,6 +55,7 @@ class Game:
                                         on_tap=self.restart))
         self.again.visible = self.again.enabled = False
         self.bg = self._table()
+        self._scores = {}
         self._build_space()
         self.serve(random.choice((0, 1)))
 
@@ -215,8 +216,11 @@ class Game:
 
     def _score_text(self, surf, n, side):
         """Each score faces its own player (rotated toward their end)."""
-        img = font(34).render(str(n), True, BLUE if side == 0 else RED)
-        img = pygame.transform.rotate(img, -90 if side == 0 else 90)
+        key = (n, side)
+        if key not in self._scores:
+            img = text(34, str(n), BLUE if side == 0 else RED)
+            self._scores[key] = pygame.transform.rotate(img, -90 if side == 0 else 90)
+        img = self._scores[key]
         x = RINK.centerx - 40 - img.get_width() if side == 0 else RINK.centerx + 40
         surf.blit(img, (x, RINK.top + 10))
 
@@ -240,6 +244,6 @@ class Game:
             shade.fill((0, 0, 0, 140))
             surf.blit(shade, (0, 0))
             who = "Blue wins!" if self.winner == 0 else "Red wins!"
-            img = font(48).render(who, True, BLUE if self.winner == 0 else RED)
+            img = text(48, who, BLUE if self.winner == 0 else RED)
             surf.blit(img, img.get_rect(center=(W // 2, H // 2 - 20)))
         self.ui.draw(surf)

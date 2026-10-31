@@ -47,6 +47,21 @@ def font(size, bold=True):
     return _fonts[key]
 
 
+_texts = {}
+
+
+def text(size, string, color, bold=True):
+    """font(size).render(string), cached: rendering text is slow on a single-core Pi,
+    and HUDs redraw the same strings every frame."""
+    key = (size, bold, string, tuple(color))
+    img = _texts.get(key)
+    if img is None:
+        if len(_texts) > 400:
+            _texts.clear()
+        img = _texts[key] = font(size, bold).render(string, True, color)
+    return img
+
+
 def rounded(surf, color, rect, radius, width=0):
     """Rounded rect that respects alpha in color (pygame.draw ignores it on opaque surfaces)."""
     rect = pygame.Rect(rect)
@@ -114,7 +129,7 @@ class Button(Control):
         rounded(surf, face, r, min(14, r.h // 3))
         rounded(surf, EDGE_COLOR, r, min(14, r.h // 3), 2)
         if self.label:
-            img = font(max(12, min(26, r.h // 2))).render(self.label, True, INK)
+            img = text(max(12, min(26, r.h // 2)), self.label, INK)
             surf.blit(img, img.get_rect(center=r.center))
 
 
@@ -164,7 +179,7 @@ class HoldButton(Button):
             box.center = r.center
             pygame.draw.arc(surf, INK, box, math.pi / 2, math.pi / 2 + 2 * math.pi * self.progress, 3)
         if self.label:
-            img = font(max(12, min(26, r.h // 2))).render(self.label, True, INK)
+            img = text(max(12, min(26, r.h // 2)), self.label, INK)
             surf.blit(img, img.get_rect(center=r.center))
 
 
@@ -199,8 +214,8 @@ class Slider(Control):
         rounded(surf, EDGE_COLOR, r, r.h // 2, 2)
         knob = (r.x + int(r.w * t), r.centery)
         pygame.draw.circle(surf, INK, knob, r.h // 2 + 3)
-        text = f"{self.label}  {self.fmt.format(self.value)}" if self.label else self.fmt.format(self.value)
-        img = font(max(11, r.h // 2)).render(text, True, INK)
+        label = f"{self.label}  {self.fmt.format(self.value)}" if self.label else self.fmt.format(self.value)
+        img = text(max(11, r.h // 2), label, INK)
         surf.blit(img, img.get_rect(midbottom=(r.centerx, r.y - 2)))
 
 

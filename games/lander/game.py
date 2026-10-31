@@ -14,7 +14,7 @@ import random
 import pygame
 import pygame.gfxdraw
 
-from playground.ui import Controls, Button, HoldButton, font
+from playground.ui import Controls, Button, HoldButton, font, text
 
 W, H = 800, 360
 SAFE_VY, SAFE_VX, SAFE_ANGLE = 12.0, 8.0, 10.0      # ft/s, ft/s, degrees
@@ -209,7 +209,7 @@ class Game:
         pygame.draw.lines(surf, (170, 170, 185), False, self.terrain, 2)
         for x0, x1, y, m in self.pads:
             pygame.draw.line(surf, (255, 214, 110), (x0, y), (x1, y), 3)
-            tag = font(13).render(f"x{m}", True, (255, 214, 110))
+            tag = text(13, f"x{m}", (255, 214, 110))
             surf.blit(tag, tag.get_rect(midtop=((x0 + x1) / 2, y + 5)))
         for x, y, vx, vy, life, c in self.particles:
             r = 2 if life > 0.3 else 1
@@ -222,7 +222,7 @@ class Game:
         self._arrow(surf, self.right.rect, 1)
         if self.message:
             good = self.state == "landed"
-            img = font(34).render(self.message, True, (140, 235, 150) if good else (255, 130, 110))
+            img = text(34, self.message, (140, 235, 150) if good else (255, 130, 110))
             surf.blit(img, img.get_rect(center=(W // 2, 160)))
 
     def _ship(self, surf):
@@ -247,15 +247,14 @@ class Game:
     def _hud(self, surf):
         alt = max(0, int(self.ground(self.pos[0]) - self.pos[1] - FOOT))
         vx, vy = self.vel
-        f = font(15)
         def stat(label, value, ok, x):
-            img = f.render(f"{label} {value}", True, (150, 235, 160) if ok else (240, 240, 240))
+            img = text(15, f"{label} {value}", (150, 235, 160) if ok else (240, 240, 240))
             surf.blit(img, (x, 8))
         stat("ALT", f"{alt} ft", True, 14)
         stat("H", f"{vx:+.0f} ft/s", abs(vx) <= SAFE_VX, 104)
         stat("V", f"{vy:+.0f} ft/s", vy <= SAFE_VY, 200)
         stat("TILT", f"{self.angle:+.0f}°", abs(self.angle) <= SAFE_ANGLE, 296)
-        lv = f.render(f"LEVEL {self.level}   SCORE {self.total}", True, (240, 240, 240))
+        lv = text(15, f"LEVEL {self.level}   SCORE {self.total}", (240, 240, 240))
         surf.blit(lv, lv.get_rect(topright=(W - 14, 8)))
         bar = pygame.Rect(W - 200, 30, 186, 8)                    # fuel
         pygame.draw.rect(surf, (60, 60, 70), bar, border_radius=4)
@@ -263,5 +262,5 @@ class Game:
         fill = bar.copy()
         fill.w = max(0, int(bar.w * k))
         pygame.draw.rect(surf, (255, 190, 70) if k > 0.25 else (255, 90, 70), fill, border_radius=4)
-        lab = font(11).render("FUEL", True, (200, 200, 210))
+        lab = text(11, "FUEL", (200, 200, 210))
         surf.blit(lab, lab.get_rect(midright=(bar.x - 6, bar.centery)))

@@ -26,6 +26,9 @@ import time
 import traceback
 from pathlib import Path
 
+os.environ.setdefault("SDL_AUDIODRIVER", "dummy")   # no sound yet: don't open ALSA (underrun spam)
+os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
+
 import pygame
 
 from playground.touch import EvdevTouch
@@ -160,9 +163,11 @@ class Menu:
             r = pygame.Rect(x0 + (i % cols) * (cw + gap), y0 + (i // cols) * (ch + gap), cw, ch)
             from playground.ui import Button
             b = self.ui.add(Button(r, "", on_tap=lambda name=name: self._pick(name)))
-            b.visible = False                    # drawn as a card below
+            b.draw = lambda surf: None           # touchable, but drawn as a card below
             self.cards.append((name, r, b))
         self.t = 0.0
+        self.dirty = True                        # redraw needed (the runner skips idle frames)
+        self.last_down = None
         self.icons = {}
         for name, r, _ in self.cards:
             g = games[name]
@@ -172,22 +177,36 @@ class Menu:
             except Exception:
                 icon.fill((40, 44, 60))
             self.icons[name] = icon
+        self.bg = pygame.Surface((w, h))         # everything that never changes, drawn once
+        for y in range(0, h, 4):                 # dusk gradient
+            k = y / h
+            pygame.draw.rect(self.bg, (int(18 + 20 * k), int(20 + 12 * k), int(40 + 30 * k)), (0, y, w, 4))
+        title = font(40).render("Games", True, (250, 236, 200))
+        self.bg.blit(title, title.get_rect(midtop=(w // 2, 22)))
+        hint = font(14, False).render("tap a game  ·  hold MENU at the top to come back here", True, (190, 190, 210))
+        self.bg.blit(hint, hint.get_rect(midbottom=(w // 2, h - 8)))
+        self.labels = {name: font(26).render(getattr(games[name], "TITLE", name), True, (255, 255, 255))
+                       for name in games}
+
+    @property
+    def idle(self):
+        return not self.dirty
 
     def _pick(self, name):
         self.launch = name
 
     def fingers(self, f):
         self.ui.feed(f)
+        down = tuple(b.down for _, _, b in self.cards)
+        if down != self.last_down:
+            self.last_down, self.dirty = down, True
 
     def update(self, dt):
         self.t += dt
 
     def draw(self, surf):
-        for y in range(0, self.h, 4):            # dusk gradient
-            k = y / self.h
-            pygame.draw.rect(surf, (int(18 + 20 * k), int(20 + 12 * k), int(40 + 30 * k)), (0, y, self.w, 4))
-        title = font(40).render("Games", True, (250, 236, 200))
-        surf.blit(title, title.get_rect(midtop=(self.w // 2, 22)))
+        self.dirty = False
+        surf.blit(self.bg, (0, 0))
         for name, r, b in self.cards:
             g = self.games[name]
             lift = -3 if b.down else 0
@@ -195,10 +214,8 @@ class Menu:
             pygame.draw.rect(surf, (0, 0, 0), card.move(0, 6), border_radius=18)
             pygame.draw.rect(surf, g.COLOR if hasattr(g, "COLOR") else (70, 80, 120), card, border_radius=18)
             surf.blit(self.icons[name], (card.x + 10, card.y + 10))
-            label = font(26).render(getattr(g, "TITLE", name), True, (255, 255, 255))
+            label = self.labels[name]
             surf.blit(label, label.get_rect(midbottom=(card.centerx, card.bottom - 12)))
-        hint = font(14, False).render("tap a game  ·  hold MENU at the top to come back here", True, (190, 190, 210))
-        surf.blit(hint, hint.get_rect(midbottom=(self.w // 2, self.h - 8)))
 
 
 # ------------------------------------------------------------------ runner
@@ -247,7 +264,7 @@ def main():
     signal.signal(signal.SIGTERM, _stop)
     if hasattr(signal, "SIGHUP"):
         signal.signal(signal.SIGHUP, _stop)
-    pygame.init()
+    pygame.font.init()                           # not pygame.init(): that also opens audio
     window = args.window or not sys.platform.startswith("linux")
     headless = bool(args.shot)
     disp = Display(window and not headless, "fb" if args.fb else "auto", args.zoom, headless)
@@ -271,6 +288,8 @@ def main():
     clock = pygame.time.Clock()
     acc, frame, mouse_down = 0.0, 0, False
     fps_font = font(13, False)
+    timing = {"update": 0.0, "draw": 0.0, "present": 0.0}
+    t_report, n_report, skipped = time.time(), 0, 0
     try:
         while True:
             ms = clock.tick(0 if headless else 60)
@@ -288,9 +307,12 @@ def main():
                 elif e.type == pygame.MOUSEBUTTONUP and e.button == 1:
                     mouse_down = False
 
+            brief = {}
             if touch:
                 touch.events()
                 fingers = dict(touch.fingers)
+                # quick taps that went down and up since the last frame: show them for one feed
+                brief = {k: v for k, v in touch.take_seen().items() if k not in fingers}
             elif headless:
                 fingers = scripted_fingers(frame, script)
             elif mouse_down:
@@ -299,13 +321,18 @@ def main():
             else:
                 fingers = {}
 
+            if brief:                                    # a tap shorter than one frame
+                game.fingers(shell.feed({**fingers, **brief}))
             free = shell.feed(fingers)                   # home tab first
             game.fingers(free)
             shell.tick(STEP)
 
+            t0 = time.perf_counter()
             while acc >= STEP:
                 game.update(STEP)
                 acc -= STEP
+            t1 = time.perf_counter()
+            timing["update"] += t1 - t0
 
             nxt = getattr(game, "launch", None)
             if want_home and current != MENU:
@@ -322,12 +349,32 @@ def main():
                 shell = Controls()
                 shell.add(home)
 
-            game.draw(disp.canvas)
-            shell.draw(disp.canvas)
-            if args.fps:
-                img = fps_font.render(f"{clock.get_fps():3.0f} fps", True, (230, 230, 230), (0, 0, 0))
-                disp.canvas.blit(img, (4, CANVAS[1] - 18))
-            disp.present(getattr(game, "SMOOTH", True))
+            if getattr(game, "idle", False) and not home.held and not args.fps and not headless:
+                skipped += 1                             # nothing changed: keep the last frame up
+                time.sleep(0.01)
+            else:
+                game.draw(disp.canvas)
+                shell.draw(disp.canvas)
+                if args.fps:
+                    img = fps_font.render(f"{clock.get_fps():3.0f} fps", True, (230, 230, 230), (0, 0, 0))
+                    disp.canvas.blit(img, (4, CANVAS[1] - 18))
+                t2 = time.perf_counter()
+                disp.present(getattr(game, "SMOOTH", True))
+                t3 = time.perf_counter()
+                timing["draw"] += t2 - t1
+                timing["present"] += t3 - t2
+                n_report += 1
+
+            # every 5 s, if --fps or frames are slow: where the time goes (paste this when asking)
+            now = time.time()
+            if now - t_report >= 5 and n_report:
+                per = {k: v / n_report * 1000 for k, v in timing.items()}
+                fps = n_report / (now - t_report)
+                if args.fps or fps < 40:
+                    print(f"[timing] {current}: {fps:4.1f} fps | update {per['update']:.0f} ms, "
+                          f"draw {per['draw']:.0f} ms, present {per['present']:.0f} ms per frame", flush=True)
+                timing = dict.fromkeys(timing, 0.0)
+                t_report, n_report = now, 0
 
             frame += 1
             if headless and frame >= args.frames:

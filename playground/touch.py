@@ -62,6 +62,7 @@ class EvdevTouch:
         self.slot = 0
         self.slots = {}                  # slot -> [tracking id, raw x, raw y]
         self.fingers = {}                # tracking id -> (x, y) in screen pixels
+        self.seen = {}                   # every finger down at any point since take_seen()
 
     @classmethod
     def open(cls, screen_w, screen_h, name=DEVICE_NAME):
@@ -80,6 +81,13 @@ class EvdevTouch:
                 raw = _abs_range(dev) or (screen_w, screen_h)
                 return cls(dev, screen_w, screen_h, raw)
         return None
+
+    def take_seen(self):
+        """Fingers that touched down at any point since the last call, including quick
+        taps that went down and up between two frames (on a slow Pi those would
+        otherwise be missed entirely). Call after events()."""
+        seen, self.seen = self.seen, dict(self.fingers)
+        return seen
 
     def events(self):
         out = []
@@ -110,6 +118,7 @@ class EvdevTouch:
                 elif ev.type == ecodes.EV_SYN:
                     self.fingers = {sl[0]: (sl[1] * self.sx, sl[2] * self.sy)
                                     for sl in self.slots.values() if sl[0] >= 0}
+                    self.seen.update(self.fingers)
                     # X/Y arrive in the same report as BTN_TOUCH, so act on SYN
                     pos = (self.x * self.sx, self.y * self.sy)
                     if self.pending == "down":
